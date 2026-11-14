@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ClearVector // AEOLUS-ATC National Airspace Engine</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <style>
+    body { margin: 0; display: flex; height: 100vh; background: #0b101b; color: #e2e8f0; font-family: 'Courier New', monospace; }
+    #map { flex: 1; height: 100vh; cursor: crosshair; }
+    #sidebar { width: 410px; background: #111827; padding: 18px; border-left: 2px solid #1f2937; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+    h2 { margin: 0; color: #38bdf8; font-size: 18px; letter-spacing: 1px; }
+    .card { background: #1e293b; padding: 10px; border-radius: 6px; border-left: 4px solid #38bdf8; font-size: 12.5px; }
+    .diverted { border-left-color: #f43f5e; background: #2d1622; }
+    button { background: #0284c7; color: white; border: none; padding: 9px; border-radius: 4px; font-family: inherit; font-weight: bold; cursor: pointer; text-align: left; font-size: 12px; }
+    button:hover { opacity: 0.9; }
+    .btn-play { background: #16a34a; }
+    .btn-warn { background: #d97706; }
+    .btn-danger { background: #e11d48; }
+    .btn-ai { background: #7c3aed; }
+    select, input { background: #0f172a; color: #fff; border: 1px solid #334155; padding: 6px; border-radius: 4px; font-family: inherit; font-size: 12px; }
+    .tag { font-weight: bold; color: #4ade80; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="sidebar">
+    <h2>CLEARVECTOR // AEOLUS-ATC</h2>
+    <div style="font-size:11px; color:#94a3b8;">Odyssey Navigation Engine: C++17 A* + NOAA NEXRAD + Gemini AI</div>
+
+    <div class="card">
+      <div>C++ A* LATENCY: <span id="latMs" class="tag">0.00 ms</span> | NODES: <span id="nodes" class="tag">0</span></div>
+      <div>RADAR MODE: <span id="modeTxt" class="tag">GROUND NEXRAD COMPOSITE</span></div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px;">
+      <button class="btn-play" id="playBtn" onclick="togglePlay()">&#9654; Play Live Flights</button>
+      <button class="btn-ai" onclick="triggerAIBriefing()">&#128266; Gemini + ElevenLabs ATC</button>
+      <button onclick="loadScenario(1)">[1] Gulf Squall Scenario</button>
+      <button class="btn-danger" onclick="loadScenario(2)">[2] Block MIA (Divert ATL)</button>
+      <button class="btn-warn" onclick="toggleCockpit()">[SPACE] Cockpit Blindspot</button>
+      <button onclick="toggleNexrad()">[R] Live NOAA NEXRAD</button>
+    </div>
+
+    <!-- Custom Flight Spawner -->
+    <div class="card" style="border-left-color:#10b981;">
+      <div style="font-weight:bold; margin-bottom:5px;">+ SPAWN CUSTOM FLIGHT</div>
+      <div style="display:flex; gap:4px;">
+        <input id="csInput" value="SWA77" style="width:60px;" />
+        <select id="origSel"></select>
+        <span style="align-self:center;">&rarr;</span>
+        <select id="destSel"></select>
+        <button onclick="spawnFlight()" style="padding:6px 10px; background:#10b981;">Add</button>
+      </div>
+    </div>
+
+    <!-- AI Briefing Box -->
+    <div class="card" style="border-left-color:#a855f7;">
+      <div style="font-weight:bold; color:#c084fc; margin-bottom:4px;">GEMINI + ELEVENLABS TACTICAL ADVISORY:</div>
+      <div id="aiBox" style="font-size:12px; color:#e2e8f0; font-style:italic;">Click "Gemini + ElevenLabs ATC" to generate live voice vector advisory...</div>
+    </div>
+
+    <div id="roster" style="display:flex; flex-direction:column; gap:6px;"></div>
+  </div>
+
+  <script>
+    const map = L.map('map').setView([35.5, -95.0], 4);
+
+    // Esri World Dark Gray Canvas + State Borders (Zero API Key)
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri', maxZoom: 16
+    }).addTo(map);
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 16
+    }).addTo(map);
+
+    const nexradLayer = L.tileLayer.wms('https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi', {
+      layers: 'nexrad-n0q-900913', format: 'image/png', transparent: true, opacity: 0.55
+    }).addTo(map);
+
+    let cockpitMode = false, showNexrad = true, playing = false, playTimer = null;
+    let lastFlights = [];
+    let routeLayers = L.layerGroup().addTo(map);
+    let stormLayers = L.layerGroup().addTo(map);
+
+    const AIRPORTS = [
+      {code:"SEA", lat:47.45, lon:-122.30}, {code:"SFO", lat:37.62, lon:-122.37},
+      {code:"LAX", lat:33.94, lon:-118.40}, {code:"DEN", lat:39.85, lon:-104.67},
+      {code:"DFW", lat:32.89, lon:-97.04},  {code:"AUS", lat:30.19, lon:-97.66},
+      {code:"ORD", lat:41.97, lon:-87.90},  {code:"ATL", lat:33.64, lon:-84.42},
+      {code:"JFK", lat:40.64, lon:-73.77},  {code:"MIA", lat:25.79, lon:-80.29}
+    ];
+
+    const origSel = document.getElementById('origSel');
+    const destSel = document.getElementById('destSel');
+    AIRPORTS.forEach((a, i) => {
+      L.circleMarker([a.lat, a.lon], {radius: 5, color: '#fff', fillColor: '#38bdf8', fillOpacity: 1})
+       .bindTooltip(a.code, {permanent: true, direction: 'top', offset:[0,-5]}).addTo(map);
+      origSel.innerHTML += `<option value="${i}" ${i===4?'selected':''}>${a.code}</option>`;
+      destSel.innerHTML += `<option value="${i}" ${i===9?'selected':''}>${a.code}</option>`;
+    });
+
+    async function refreshRoutes() {
+      const res = await fetch('/compute', {method: 'POST', body: JSON.stringify({cockpitMode})});
+      const data = await res.json();
+      lastFlights = data.flights;
+      document.getElementById('latMs').innerText = data.calcMs.toFixed(2) + ' ms';
+      document.getElementById('nodes').innerText = data.nodes;
+
+      routeLayers.clearLayers();
+      const roster = document.getElementById('roster');
+      roster.innerHTML = '';
+
+      data.flights.forEach((f, idx) => {
+        if (f.path.length > 0) {
+          const origPt = f.path[0];
+          const destAp = AIRPORTS.find(a => a.code === f.dest);
+          // Dashed red intended straight line
+          if (destAp) L.polyline([origPt, [destAp.lat, destAp.lon]], {color: '#ef4444', weight: 1.5, dashArray: '5,6', opacity: 0.5}).addTo(routeLayers);
+
+          const color = f.diverted ? '#f43f5e' : (cockpitMode && idx===0 ? '#f59e0b' : '#4ade80');
+          L.polyline(f.path, {color, weight: idx===0 ? 4 : 2.5}).addTo(routeLayers);
+          L.circleMarker(origPt, {radius: 6, color: '#38bdf8', fillColor: '#0284c7', fillOpacity: 1})
+           .bindTooltip(f.callsign, {permanent: true, direction: 'right'}).addTo(routeLayers);
+        }
+
+        const div = document.createElement('div');
+        div.className = 'card' + (f.diverted ? ' diverted' : '');
+	const arrived = f.path.length <= 1;
+        div.innerHTML = `<b>${f.callsign}</b> (${f.orig} &rarr; ${f.dest}) - ${arrived ? '0' : f.path.length} wypts<br>` +
+          (arrived ? `<span style="color:#38bdf8;font-weight:bold;">ARRIVED AT ${f.activeGoal} &#10004;</span>` :
+          (f.diverted ? `<span style="color:#fb7185;font-weight:bold;">EMERGENCY DIVERSION &rarr; ${f.activeGoal}</span>`
+                      : `<span style="color:#4ade80;">STATUS: SAFE VECTOR LOCKED</span>`));        
+        roster.appendChild(div);
+      });
+    }
+
+    function togglePlay() {
+      playing = !playing;
+      const btn = document.getElementById('playBtn');
+      btn.innerHTML = playing ? '&#9208; Pause Flights' : '&#9654; Play Live Flights';
+      btn.style.background = playing ? '#eab308' : '#16a34a';
+      if (playing) {
+        playTimer = setInterval(async () => {
+          await fetch('/step_flights', {method: 'POST', body: JSON.stringify({cockpitMode})});
+          refreshRoutes();
+        }, 450);
+      } else {
+        clearInterval(playTimer);
+      }
+    }
+
+    async function spawnFlight() {
+      const callsign = document.getElementById('csInput').value || 'SWA77';
+      const orig = parseInt(origSel.value), dest = parseInt(destSel.value);
+      if (orig === dest) return;
+      await fetch('/add_flight', {method: 'POST', body: JSON.stringify({callsign, orig, dest})});
+      refreshRoutes();
+    }
+
+    async function triggerAIBriefing() {
+      document.getElementById('aiBox').innerText = "Querying Gemini 2.5 Flash & ElevenLabs ATC Voice...";
+      const f0 = lastFlights[0] || {callsign:'LJ60', orig:'AUS', dest:'MIA', activeGoal:'ATL', diverted:true};
+      const summary = `Aircraft ${f0.callsign} from ${f0.orig} to ${f0.dest}. Diverted: ${f0.diverted}. Active target: ${f0.activeGoal}. Cockpit Blindspot Mode: ${cockpitMode}.`;
+      const res = await fetch('/ai_briefing', {method: 'POST', body: JSON.stringify({summary})});
+      const data = await res.json();
+      document.getElementById('aiBox').innerText = data.briefing;
+
+      if (data.audio_b64) {
+        new Audio("data:audio/mp3;base64," + data.audio_b64).play();
+      } else if ('speechSynthesis' in window) {
+        const u = new SpeechSynthesisUtterance(data.briefing);
+        u.rate = 1.08; window.speechSynthesis.speak(u);
+      }
+    }
+
+    map.on('click', async (e) => {
+      const weight = e.originalEvent.shiftKey ? 10 : 999;
+      const rad = e.originalEvent.shiftKey ? 3 : 4;
+      const col = weight === 999 ? '#ef4444' : '#eab308';
+      L.circle([e.latlng.lat, e.latlng.lng], {radius: rad * 35000, color: col, fillColor: col, fillOpacity: 0.55}).addTo(stormLayers);
+      await fetch('/add_storm', {method: 'POST', body: JSON.stringify({lat: e.latlng.lat, lon: e.latlng.lng, rad, weight})});
+      refreshRoutes();
+    });
+
+    async function loadScenario(id) {
+      stormLayers.clearLayers();
+      if (id === 1) {
+        L.circle([28.5, -89.5], {radius: 140000, color:'#ef4444', fillOpacity:0.55}).addTo(stormLayers);
+        L.circle([37.0, -95.0], {radius: 110000, color:'#ef4444', fillOpacity:0.55}).addTo(stormLayers);
+      } else {
+        L.circle([29.0, -91.5], {radius: 105000, color:'#eab308', fillOpacity:0.55}).addTo(stormLayers);
+        L.circle([28.2, -87.0], {radius: 175000, color:'#ef4444', fillOpacity:0.55}).addTo(stormLayers);
+        L.circle([25.79, -80.29], {radius: 150000, color:'#ef4444', fillOpacity:0.65}).addTo(stormLayers);
+      }
+      await fetch('/scenario', {method: 'POST', body: JSON.stringify({id})});
+      refreshRoutes();
+    }
+
+    function toggleCockpit() {
+      cockpitMode = !cockpitMode;
+      const el = document.getElementById('modeTxt');
+      el.innerText = cockpitMode ? 'COCKPIT X-BAND (ATTENUATED)' : 'GROUND NEXRAD COMPOSITE';
+      el.style.color = cockpitMode ? '#f59e0b' : '#4ade80';
+      refreshRoutes();
+    }
+
+    function toggleNexrad() {
+      showNexrad = !showNexrad;
+      if (showNexrad) nexradLayer.addTo(map); else map.removeLayer(nexradLayer);
+    }
+
+    loadScenario(1);
+  </script>
+</body>
+</html>
