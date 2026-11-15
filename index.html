@@ -172,7 +172,7 @@
     }
 
     async function refreshRoutes() {
-      const res = await fetch('/compute', {method: 'POST', body: JSON.stringify({cockpitMode})});
+      const res = await fetch('/compute', {method: 'POST', body: JSON.stringify({})});
       const data = await res.json();
       lastFlights = data.flights;
       document.getElementById('latMs').innerText = data.calcMs.toFixed(2) + ' ms';
@@ -189,7 +189,7 @@
           // Dashed red intended straight line
           if (destAp) L.polyline([origPt, [destAp.lat, destAp.lon]], {color: '#ef4444', weight: 1.5, dashArray: '5,6', opacity: 0.5}).addTo(routeLayers);
 
-          const color = f.diverted ? '#f43f5e' : (cockpitMode && idx===0 ? '#f59e0b' : '#4ade80');
+	  const color = f.diverted ? '#f43f5e' : '#4ade80';
           L.polyline(f.path, {color, weight: idx===0 ? 4 : 2.5}).addTo(routeLayers);
           
           const activeIcon = odysseyMode ? (shipIcons[f.shipStyle] || shipIcons[1]) : planeIcon;
@@ -216,7 +216,7 @@
       btn.style.background = playing ? '#eab308' : '#16a34a';
       if (playing) {
         playTimer = setInterval(async () => {
-          await fetch('/step_flights', {method: 'POST', body: JSON.stringify({cockpitMode})});
+          await fetch('/step_flights', {method: 'POST', body: JSON.stringify({})});
           refreshRoutes();
         }, 450);
       } else {
@@ -236,7 +236,7 @@
     async function triggerAIBriefing() {
       document.getElementById('aiBox').innerText = "Querying Gemini 2.5 Flash & ElevenLabs ATC Voice...";
       const f0 = lastFlights[0] || {callsign:'LJ60', orig:'AUS', dest:'MIA', activeGoal:'ATL', diverted:true};
-      const summary = `Aircraft ${f0.callsign} from ${f0.orig} to ${f0.dest}. Diverted: ${f0.diverted}. Active target: ${f0.activeGoal}. Cockpit Blindspot Mode: ${cockpitMode}.`;
+      const summary = `Aircraft ${f0.callsign} from ${f0.orig} to ${f0.dest}. Diverted: ${f0.diverted}. Active target: ${f0.activeGoal}.`;
       const res = await fetch('/ai_briefing', {method: 'POST', body: JSON.stringify({summary})});
       const data = await res.json();
       document.getElementById('aiBox').innerText = data.briefing;
