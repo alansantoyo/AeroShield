@@ -1,4 +1,18 @@
 import os, subprocess, json, urllib.request, base64, random, ssl, math
+
+import time
+mongo_col = None
+mongo_logged_keys = set() # Prevents logging the exact same flight state twice on every 450ms tick
+try:
+    import pymongo, certifi
+    m_uri = os.environ.get("MONGODB_URI", "").strip()
+    if m_uri:
+        client = pymongo.MongoClient(m_uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=2500)
+        mongo_col = client["clearvector_ntsb"]["blackbox_vault"]
+        print("[MongoDB Atlas] Connected to clearvector_ntsb.blackbox_vault!")
+except Exception as e:
+    print(f"[MongoDB Atlas Standby]: {e}")
+
 from http.server import SimpleHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 AIRPORTS = [
@@ -56,12 +70,39 @@ class Handler(SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(length)) if length else {}
 
         if self.path == '/compute':
-            cockpit = "1" if body.get("cockpitMode") else "0"
-            out = subprocess.check_output(["./clearvector_cli", cockpit]).decode()
+            out = subprocess.check_output(["./clearvector_cli", "0"]).decode()
+            parsed = json.loads(out)
+            m_count = len(mongo_logged_keys)
+
+            if mongo_col is not None:
+                try:
+                    for fl in parsed.get("flights", []):
+                        is_incident = fl.get("diverted") or fl.get("fuelExhausted") or len(fl.get("path", [])) == 0
+                        dedup_key = f"{fl['callsign']}_{fl['activeGoal']}_{fl['divertReason']}_{fl['fuelExhausted']}"
+                        if is_incident and dedup_key not in mongo_logged_keys:
+                            mongo_logged_keys.add(dedup_key)
+                            mongo_col.insert_one({
+                                "event_type": "NTSB_FLIGHT_INCIDENT",
+                                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                "callsign": fl["callsign"],
+                                "origin": fl["orig"],
+                                "intended_dest": fl["dest"],
+                                "active_goal": fl["activeGoal"],
+                                "reason": fl["divertReason"],
+                                "fuel_remaining": fl["fuel"],
+                                "last_known_lat_lon": [fl["lat"], fl["lon"]],
+                                "last_known_grid": [fl["gridX"], fl["gridY"]],
+                                "astar_calc_ms": parsed.get("calcMs", 0)
+                            })
+                    m_count = mongo_col.count_documents({})
+                except Exception as ex:
+                    print(f"[MongoDB write warn]: {ex}")
+
+            parsed["mongoCount"] = m_count
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(out.encode())
+            self.wfile.write(json.dumps(parsed).encode())
 
 
         elif self.path == '/step_flights':
@@ -194,7 +235,7 @@ class Handler(SimpleHTTPRequestHandler):
                     f"- If Diverted is false and Active storms > 0: advise holding the A-Star avoidance corridor around hazards, risk_score 3 to 5, minor fuel impact.\n"
                     f"- If FUEL EXHAUSTED or Fuel Remaining is 0u: issue a Mayday ditching squawk, risk_score 10, fuel_impact_est 'CRITICAL (TANKS DRY)'.\n"
                     f"- If BLOCKED_BY_STORM with Fuel Remaining > 0u: instruct aircraft to enter an emergency holding pattern using remaining fuel reserves until corridors open, risk_score 9, fuel_impact_est 'HOLDING (BURNING RESERVE)'.\n"
-                    f"- If Diverted is true: issue an urgent diversion squawk to Active Goal referencing Zeus/Poseidon/Scylla, risk_score 8, high fuel impact.\n"
+                    f"- If Diverted is true: issue an urgent diversion squawk to Active Goal referencing Zeus/Poseidon/Polyphemus, risk_score 8, high fuel impact.\n"
                     f"Reply in ONE single line separated by pipes (|) with no markdown:\n"
                     f"2-sentence ATC radio call | integer risk 1-10 | fuel & time impact string"
                 )
@@ -238,6 +279,20 @@ class Handler(SimpleHTTPRequestHandler):
                     audio_b64 = base64.b64encode(audio_bytes).decode()
                 except Exception:
                     audio_b64 = ""
+            
+            if mongo_col is not None:
+                try:
+                    mongo_col.insert_one({
+                        "event_type": "GEMINI_ATC_ADVISORY",
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "callsign": callsign,
+                        "telemetry_summary": summary,
+                        "risk_score": tactical_card["risk_score"],
+                        "fuel_impact_est": tactical_card["fuel_impact_est"],
+                        "voice_squawk": tactical_card["voice_squawk"]
+                    })
+                except Exception:
+                    pass
 
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')

@@ -32,6 +32,8 @@
       <div>C++ A* LATENCY: <span id="latMs" class="tag">0.00 ms</span> | NODES: <span id="nodes" class="tag">0</span></div>
     </div>
 
+    <div>MONGODB NTSB VAULT: <span id="mongoCount" style="color:#10b981;font-weight:bold;">0</span> LOGS</div>
+
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px;">
       <button class="btn-play" id="playBtn" onclick="togglePlay()">&#9654; Play Live Flights</button>
       <button class="btn-ai" onclick="triggerAIBriefing()">&#128266; Gemini + ElevenLabs ATC</button>
@@ -207,6 +209,10 @@
       document.getElementById('latMs').innerText = data.calcMs.toFixed(2) + ' ms';
       document.getElementById('nodes').innerText = data.nodes;
 
+      if (document.getElementById('mongoCount')) {
+        document.getElementById('mongoCount').innerText = data.mongoCount || 0;
+      }
+
       routeLayers.clearLayers();
       const sidebar = document.getElementById('sidebar');
       const roster = document.getElementById('roster');
@@ -215,9 +221,11 @@
       roster.innerHTML = '';
 
       data.flights.forEach((f, idx) => {
-        const arrived = (!f.fuelExhausted && f.path.length === 1);
-        const weatherTrapped = (!arrived && !f.fuelExhausted && f.path.length === 0);
-        const stranded = (f.fuelExhausted || weatherTrapped);
+        const atOrigin = (Math.abs(f.lat - AIRPORTS.find(a => a.code === f.orig).lat) < 0.25 &&
+                          Math.abs(f.lon - AIRPORTS.find(a => a.code === f.orig).lon) < 0.25);
+        const arrived = (!f.fuelExhausted && f.path.length === 1 && !atOrigin);
+        const destUnreachable = (!arrived && !f.fuelExhausted && f.path.length <= 1);
+        const stranded = (f.fuelExhausted || destUnreachable);
 
         if (stranded) {
           const tag = f.fuelExhausted ? 'BLACKBOX (NO FUEL)' : 'WEATHER HOLD (TRAPPED)';
@@ -251,8 +259,9 @@
         let statusLine = '';
         if (f.fuelExhausted) {
           statusLine = `<span style="color:#ef4444;font-weight:bold;">&#9888; BLACKBOX PING: FUEL EXHAUSTED (0u)</span>`;
-        } else if (weatherTrapped) {
-          statusLine = `<span style="color:#f59e0b;font-weight:bold;">&#9888; HOLDING PATTERN: CORRIDORS BLOCKED (FUEL: ${f.fuel}u)</span>`;
+        } else if (destUnreachable) {
+          const msg = atOrigin ? `GROUND STOP AT ${f.orig}: ${f.dest} UNREACHABLE` : `HOLDING PATTERN: ${f.dest} UNREACHABLE (FUEL: ${f.fuel}u)`;
+          statusLine = `<span style="color:#f59e0b;font-weight:bold;">&#9888; ${msg}</span>`;
         } else if (arrived) {
           statusLine = `<span style="color:#38bdf8;font-weight:bold;">ARRIVED AT ${f.activeGoal} &#10004;</span>`;
         } else if (f.diverted) {

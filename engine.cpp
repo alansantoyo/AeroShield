@@ -207,6 +207,8 @@ int main(int argc, char* argv[]) {
             std::vector<std::pair<double, int>> cands;
             for (int a = 0; a < (int)airports.size(); a++) {
                 if (a == flights[i].dest) continue;
+                // Don't "divert" to origin with a 0-step path if the plane hasn't even left origin yet!
+                if (a == flights[i].orig && start == airports[flights[i].orig].pt) continue;
                 cands.push_back({std::hypot(airports[a].pt.x - start.x, airports[a].pt.y - start.y), a});
             }
             std::sort(cands.begin(), cands.end());
