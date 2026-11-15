@@ -126,9 +126,13 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps(storms).encode())
 
-        elif self.path == '/reset_all':
-            with open("storms.txt", "w") as f: pass
+        elif self.path == '/reset_flights':
             deduplicate_and_reset_flights(reset_coords=True)
+            self.send_response(200); self.end_headers()
+
+        elif self.path == '/clear_weather':
+            with open("storms.txt", "w") as f:
+                pass
             self.send_response(200); self.end_headers()
 
         elif self.path == '/ai_briefing':
@@ -137,42 +141,89 @@ class Handler(SimpleHTTPRequestHandler):
             e_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
 
             # Default structured Tactical Action Card fallback
-            tactical_card = {
-                "voice_squawk": f"AEOLUS ATC ADVISORY: {summary} Execute immediate vector around Scylla convective core.",
-                "risk_score": 8,
-                "fuel_impact_est": "+1,450 lbs (+19 mins)"
-            }
+            # 1. Check active storm count on map & parse flight state from summary
+            storm_count = 0
+            if os.path.exists("storms.txt"):
+                with open("storms.txt", "r") as sf:
+                    storm_count = sum(1 for line in sf if line.strip())
 
-            if g_key:
+            callsign = body.get("callsign", "Flight")
+            is_arrived = "Waypoints Needed: 0u" in summary and "FUEL EXHAUSTED" not in summary
+            is_fuel_dry = "FUEL EXHAUSTED" in summary or "Fuel Remaining: 0u" in summary
+            is_weather_trapped = ("BLOCKED_BY_STORM" in summary or "WEATHER BLOCKADE" in summary) and not is_fuel_dry
+            is_diverted = "Diverted: true" in summary
+
+            if is_arrived:
+                tactical_card = {
+                    "voice_squawk": f"AEOLUS-ATC to {callsign}: Welcome to safe harbor in Ithaca. Touchdown confirmed at destination gate with nominal fuel reserves.",
+                    "risk_score": 1,
+                    "fuel_impact_est": "0 lbs (ARRIVED ON TIME)"
+                }
+            elif is_fuel_dry:
+                tactical_card = {
+                    "voice_squawk": f"MAYDAY {callsign}: Fuel tanks exhausted in Poseidon's squall. Activating NTSB Black-Box locator beacon at last known grid coordinates.",
+                    "risk_score": 10,
+                    "fuel_impact_est": "CRITICAL (TANKS DRY)"
+                }
+            elif is_weather_trapped:
+                tactical_card = {
+                    "voice_squawk": f"EMERGENCY {callsign}: All approach corridors walled off by Scylla and Charybdis supercells. Enter immediate holding pattern on remaining fuel until weather clears.",
+                    "risk_score": 9,
+                    "fuel_impact_est": "HOLDING PATTERN (BURNING RESERVE)"
+                }
+            elif storm_count == 0:
+                tactical_card = {
+                    "voice_squawk": f"AEOLUS-ATC to {callsign}: Favorable tailwinds from King Aeolus across clear national airspace. Maintain optimal great-circle vector to destination.",
+                    "risk_score": 1,
+                    "fuel_impact_est": "0 lbs (CLEAR SKIES)"
+                }
+            else:
+                tactical_card = {
+                    "voice_squawk": f"AEOLUS-ATC to {callsign}: Navigating around active weather cells with sufficient fuel reserve. Hold current A-Star avoidance vector.",
+                    "risk_score": 4,
+                    "fuel_impact_est": "+420 lbs (+6 mins)"
+                }
+
+            # 3. Query Gemini Flash with thinking disabled (0.7s latency) & state-specific rules
+            if g_key and not is_arrived:
                 prompt = (
-                    f"You are AEOLUS-ATC (inspired by Homer's Odyssey). Telemetry: {summary}\n"
+                    f"You are AEOLUS-ATC (inspired by Homer's Odyssey). Active storms on US map: {storm_count}. "
+                    f"Aircraft Telemetry: {summary}\n"
+                    f"Follow these strict state rules:\n"
+                    f"- If Diverted is false and Active storms is 0: give a calm, clear-skies Odyssey blessing (Aeolus favorable winds), risk_score 1 or 2, fuel_impact_est '0 lbs (ON TIME)'. Do NOT tell them to divert.\n"
+                    f"- If Diverted is false and Active storms > 0: advise holding the A-Star avoidance corridor around hazards, risk_score 3 to 5, minor fuel impact.\n"
+                    f"- If FUEL EXHAUSTED or Fuel Remaining is 0u: issue a Mayday ditching squawk, risk_score 10, fuel_impact_est 'CRITICAL (TANKS DRY)'.\n"
+                    f"- If BLOCKED_BY_STORM with Fuel Remaining > 0u: instruct aircraft to enter an emergency holding pattern using remaining fuel reserves until corridors open, risk_score 9, fuel_impact_est 'HOLDING (BURNING RESERVE)'.\n"
+                    f"- If Diverted is true: issue an urgent diversion squawk to Active Goal referencing Zeus/Poseidon/Scylla, risk_score 8, high fuel impact.\n"
                     f"Reply in ONE single line separated by pipes (|) with no markdown:\n"
-                    f"2-sentence urgent ATC voice squawk referencing Zeus/Poseidon/Cyclops | integer risk 1-10 | extra fuel & delay estimate\n"
-                    f"Example: Mayday LJ60, turn heading 190 immediately to evade Zeus supercell. Diverting to ATL.|9|+1,650 lbs (+22 mins)"
+                    f"2-sentence ATC radio call | integer risk 1-10 | fuel & time impact string"
                 )
                 ctx = ssl._create_unverified_context()
                 try:
                     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={g_key}"
                     payload = {
                         "contents": [{"parts": [{"text": prompt}]}],
-                        "generationConfig": {"temperature": 0.4}
+                        "generationConfig": {
+                            "temperature": 0.4,
+                            "maxOutputTokens": 120,
+                            "thinkingConfig": {"thinkingBudget": 0}
+                        }
                     }
                     req = urllib.request.Request(
                         url, data=json.dumps(payload).encode(),
                         headers={"Content-Type": "application/json"}
                     )
-                    res = json.loads(urllib.request.urlopen(req, timeout=8, context=ctx).read().decode())
+                    res = json.loads(urllib.request.urlopen(req, timeout=10, context=ctx).read().decode())
                     raw_txt = res["candidates"][0]["content"]["parts"][0]["text"].strip()
                     parts = [p.strip() for p in raw_txt.split("|")]
                     if len(parts) >= 3:
                         tactical_card["voice_squawk"] = parts[0]
                         digits = "".join(c for c in parts[1] if c.isdigit())
-                        tactical_card["risk_score"] = int(digits) if digits else 8
+                        if digits:
+                            tactical_card["risk_score"] = max(1, min(10, int(digits)))
                         tactical_card["fuel_impact_est"] = parts[2]
-                    else:
-                        tactical_card["voice_squawk"] = raw_txt
                 except Exception as ex:
-                    print(f"[Gemini fast fallback]: {ex}")
+                    print(f"[Gemini fallback]: {ex}")
 
             # Send ONLY the voice_squawk string to ElevenLabs TTS
             audio_b64 = ""
