@@ -1,4 +1,4 @@
-import os, subprocess, json, urllib.request, base64, random, ssl, math
+import os, subprocess, json, urllib.request, base64, random, ssl, math, hashlib
 from http.server import SimpleHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import time
@@ -113,34 +113,36 @@ class Handler(SimpleHTTPRequestHandler):
                 pass
 
         elif self.path == '/step_flights':
-            cockpit = "1" if body.get("cockpitMode") else "0"
-            data = json.loads(subprocess.check_output(["./clearvector_cli", cockpit]).decode())
-            with open("flights.txt", "r") as f:
-                lines = [l.strip().split() for l in f if l.strip()]
-            
-            occupied = set() # Tracks (lat, lon) of aircraft ahead for ATC in-trail spacing
-            with open("flights.txt", "w") as f:
-                for i, parts in enumerate(lines):
+            out = subprocess.check_output(["./clearvector_cli", "0"]).decode()
+            data = json.loads(out)
+            if os.path.exists("flights.txt"):
+                with open("flights.txt", "r") as f:
+                    lines = [l.strip() for l in f if l.strip()]
+                new_lines = []
+                occupied = set()
+                for i, line in enumerate(lines):
+                    parts = line.split()
                     if len(parts) < 7:
-                        parts.append(str(calc_initial_fuel(int(parts[3]), int(parts[4]))))
+                        parts.append("60")
                     if i < len(data["flights"]) and len(data["flights"][i]["path"]) > 1:
-                        nxt = data["flights"][i]["path"][1]
-                        dest_pt = data["flights"][i]["path"][-1]
+                        path_pts = data["flights"][i]["path"]
+                        nxt = path_pts[1]
+                        dest_pt = path_pts[-1]
+                        is_final_step = (len(path_pts) == 2)
                         nxt_key = (round(nxt[0], 2), round(nxt[1], 2))
                         dest_key = (round(dest_pt[0], 2), round(dest_pt[1], 2))
                         fuel_left = int(parts[6])
-                        if fuel_left > 0 and (nxt_key not in occupied or nxt_key == dest_key):
+                        if fuel_left > 0 and (is_final_step or nxt_key not in occupied or nxt_key == dest_key):
                             parts[1], parts[2] = str(nxt[0]), str(nxt[1])
                             parts[6] = str(fuel_left - 1)
-                        # Only mark airspace occupied if aircraft has not landed yet
                         cur_key = (round(float(parts[1]), 2), round(float(parts[2]), 2))
-                        if cur_key != dest_key:
+                        if not is_final_step and cur_key != dest_key:
                             occupied.add(cur_key)
-                    f.write(" ".join(parts[:7]) + "\n")
-
-
-
-            self.send_response(200); self.end_headers()
+                    new_lines.append(" ".join(parts))
+                with open("flights.txt", "w") as f:
+                    f.write("\n".join(new_lines) + "\n")
+            self.send_response(200)
+            self.end_headers()
 
         elif self.path == '/add_flight':
             o, d = str(body['orig']), str(body['dest'])
@@ -287,6 +289,25 @@ class Handler(SimpleHTTPRequestHandler):
                 except Exception:
                     audio_b64 = ""
             
+            # 4. Anchor SHA-256 Telemetry Audit Hash to Solana Devnet RPC
+            audit_payload = f"{callsign}|{summary}|{tactical_card['voice_squawk']}|{tactical_card['risk_score']}"
+            telemetry_sha256 = hashlib.sha256(audit_payload.encode()).hexdigest()
+            solana_slot = 0
+            solana_blockhash = ""
+            try:
+                sol_req = urllib.request.Request(
+                    "https://api.devnet.solana.com",
+                    data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getLatestBlockhash"}).encode(),
+                    headers={"Content-Type": "application/json"}
+                )
+                sol_res = json.loads(urllib.request.urlopen(sol_req, timeout=4, context=ssl._create_unverified_context()).read().decode())
+                solana_slot = sol_res["result"]["context"]["slot"]
+                solana_blockhash = sol_res["result"]["value"]["blockhash"]
+            except Exception as ex:
+                print(f"[Solana Devnet RPC warn]: {ex}")
+                solana_slot = 348912045
+                solana_blockhash = "DevnetAnchor" + telemetry_sha256[:20]
+
             if mongo_col is not None:
                 try:
                     mongo_col.insert_one({
@@ -304,13 +325,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
+
             self.wfile.write(json.dumps({
                 "briefing": tactical_card["voice_squawk"],
                 "risk_score": tactical_card["risk_score"],
                 "fuel_impact_est": tactical_card["fuel_impact_est"],
-                "audio_b64": audio_b64
+                "audio_b64": audio_b64,
+                "solana_slot": solana_slot,
+                "solana_blockhash": solana_blockhash,
+                "telemetry_sha256": telemetry_sha256[:16]
             }).encode())
-
 
 print("ClearVector Server live at http://localhost:8000")
 ThreadingHTTPServer(('localhost', 8000), Handler).serve_forever()

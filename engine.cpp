@@ -69,9 +69,9 @@ std::vector<Point> RunAStar(Point start, Point goal, bool cockpitMode, int &node
         for (auto& d : dirs) {
             int nx = curr.pt.x + d[0], ny = curr.pt.y + d[1];
             if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H) continue;
-
-            int w = perceived[ny][nx];
-            if (w >= 999) continue;
+            double w = perceived[ny][nx];
+            if (w >= 999.0 && !(nx == goal.x && ny == goal.y && std::abs(curr.pt.x - goal.x) <= 1 && std::abs(curr.pt.y - goal.y) <= 1)) continue;
+            if (w >= 999.0) w = 50.0;
 
             double halo = 0.0;
             if (!cockpitMode) {
@@ -207,8 +207,9 @@ int main(int argc, char* argv[]) {
             std::vector<std::pair<double, int>> cands;
             for (int a = 0; a < (int)airports.size(); a++) {
                 if (a == flights[i].dest) continue;
-                // Don't "divert" to origin with a 0-step path if the plane hasn't even left origin yet!
                 if (a == flights[i].orig && start == airports[flights[i].orig].pt) continue;
+                // Do not divert to an airport that is itself buried under a 999 storm core!
+                if (grid[airports[a].pt.y][airports[a].pt.x] >= 999.0) continue;
                 cands.push_back({std::hypot(airports[a].pt.x - start.x, airports[a].pt.y - start.y), a});
             }
             std::sort(cands.begin(), cands.end());
