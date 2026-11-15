@@ -134,11 +134,11 @@ int main(int argc, char* argv[]) {
                 }
     }
 
-    struct FlightReq { std::string id; double lat, lon; int orig, dest; };
+    struct FlightReq { std::string id; double lat, lon; int orig, dest, style; };
     std::vector<FlightReq> flights;
     std::ifstream ff("flights.txt");
     FlightReq fq;
-    while (ff >> fq.id >> fq.lat >> fq.lon >> fq.orig >> fq.dest) flights.push_back(fq);
+    while (ff >> fq.id >> fq.lat >> fq.lon >> fq.orig >> fq.dest >> fq.style) flights.push_back(fq);
 
     auto t0 = std::chrono::high_resolution_clock::now();
     int totalNodes = 0;
@@ -195,6 +195,7 @@ int main(int argc, char* argv[]) {
 
         std::cout << "    {\"callsign\":\"" << flights[i].id << "\", \"orig\":\"" << airports[flights[i].orig].code
                   << "\", \"dest\":\"" << airports[flights[i].dest].code << "\", \"activeGoal\":\"" << airports[activeGoal].code
+                  << "\", \"shipStyle\":" << flights[i].style
                   << "\", \"diverted\":" << (diverted ? "true" : "false") << ", \"path\":[";
         
 	for (size_t p = 0; p < path.size(); p++) {
