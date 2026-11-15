@@ -36,13 +36,24 @@
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px;">
       <button class="btn-play" id="playBtn" onclick="togglePlay()">&#9654; Play Live Flights</button>
       <button class="btn-ai" onclick="triggerAIBriefing()">&#128266; Gemini + ElevenLabs ATC</button>
-      <button onclick="loadScenario(1)">[1] Gulf Squall Scenario</button>
-      <button class="btn-danger" onclick="loadScenario(2)">[2] Block MIA (Divert ATL)</button>
-      <button class="btn-warn" onclick="toggleCockpit()">[SPACE] Cockpit Blindspot</button>
       <button onclick="toggleNexrad()">[R] Live NOAA NEXRAD</button>
       <button onclick="toggleOdysseyIcons()" id="odysseyBtn" style="background:#b45309;">&#9875; Odyssey Ships: OFF</button>
       <button onclick="resetAll()" style="background:#475569;">&#8634; Reset Flights &amp; Clear Weather</button>
     </div>
+
+    <!-- Weather Brush & Odyssey Monster Toggle -->
+    <div class="card" style="border-left-color:#ef4444;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <b>CLICK MAP TO SPAWN HAZARD:</b>
+        <button id="monsterBtn" onclick="toggleMonsterIcons()" style="background:#9333ea; padding:4px 8px; font-size:11px;">&#9889; Monster PNGs: OFF</button>
+      </div>
+      <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:4px;">
+        <button id="wBtn3" onclick="setWeatherBrush(3)" style="background:#dc2626; text-align:center;">T-Storm<br><span style="font-size:10px;">(Zeus)</span></button>
+        <button id="wBtn2" onclick="setWeatherBrush(2)" style="background:#334155; text-align:center;">Sleet/Snow<br><span style="font-size:10px;">(Laestryg.)</span></button>
+        <button id="wBtn1" onclick="setWeatherBrush(1)" style="background:#334155; text-align:center;">Rain<br><span style="font-size:10px;">(Sirens)</span></button>
+      </div>
+    </div>
+
 
     <!-- Custom Flight Spawner -->
     <div class="card" style="border-left-color:#10b981;">
@@ -52,11 +63,6 @@
         <select id="origSel"></select>
         <span style="align-self:center;">&rarr;</span>
         <select id="destSel"></select>
-        <select id="styleSel" title="Odyssey Ship Style">
-          <option value="1">Ship 1</option>
-          <option value="2">Ship 2</option>
-          <option value="3">Ship 3</option>
-        </select>
         <button onclick="spawnFlight()" style="padding:6px 10px; background:#10b981;">Add</button>
       </div>
     </div>
@@ -120,6 +126,57 @@
       3: L.icon({ iconUrl: 'ship3.png', iconSize: [38, 38], iconAnchor: [19, 19] })
     };
 
+    let currentWeatherType = 3; // 3 = Thunderstorm, 2 = Sleet/Snow, 1 = Rain
+    let monsterWeatherMode = false;
+
+    const monsterIcons = {
+      3: L.icon({ iconUrl: 'zeus.png',           iconSize: [76, 76], iconAnchor: [38, 38] }),
+      2: L.icon({ iconUrl: 'laestrygonians.png', iconSize: [68, 68], iconAnchor: [34, 34] }),
+      1: L.icon({ iconUrl: 'sirens.png',         iconSize: [54, 54], iconAnchor: [27, 27] })
+    };
+
+    function setWeatherBrush(type) {
+      currentWeatherType = type;
+      document.getElementById('wBtn3').style.background = (type === 3) ? '#dc2626' : '#334155';
+      document.getElementById('wBtn2').style.background = (type === 2) ? '#7e22ce' : '#334155';
+      document.getElementById('wBtn1').style.background = (type === 1) ? '#16a34a' : '#334155';
+    }
+
+    function drawSingleStorm(lat, lon, type) {
+      if (monsterWeatherMode) {
+        L.marker([lat, lon], {icon: monsterIcons[type] || monsterIcons[3]}).addTo(stormLayers);
+        return;
+      }
+      if (type === 3) {
+        // Thunderstorm: Outer Green -> Middle Yellow -> Inner Dark Red Core
+        L.circle([lat, lon], {radius: 210000, stroke: false, fillColor: '#22c55e', fillOpacity: 0.35}).addTo(stormLayers);
+        L.circle([lat, lon], {radius: 140000, stroke: false, fillColor: '#eab308', fillOpacity: 0.50}).addTo(stormLayers);
+        L.circle([lat, lon], {radius:  75000, stroke: false, fillColor: '#991b1b', fillOpacity: 0.80}).addTo(stormLayers);
+      } else if (type === 2) {
+        // Sleet/Snow: Outer Light Pink -> Inner Dark Purple Core
+        L.circle([lat, lon], {radius: 175000, stroke: false, fillColor: '#f472b6', fillOpacity: 0.45}).addTo(stormLayers);
+        L.circle([lat, lon], {radius:  75000, stroke: false, fillColor: '#581c87', fillOpacity: 0.80}).addTo(stormLayers);
+      } else {
+        // Rain: Single Dark-to-Mid Green Spot
+        L.circle([lat, lon], {radius: 105000, stroke: false, fillColor: '#15803d', fillOpacity: 0.60}).addTo(stormLayers);
+      }
+    }
+
+    async function renderAllStorms() {
+      stormLayers.clearLayers();
+      const res = await fetch('/get_storms', {method: 'POST'});
+      const storms = await res.json();
+      storms.forEach(s => drawSingleStorm(s.lat, s.lon, s.type));
+    }
+
+    function toggleMonsterIcons() {
+      monsterWeatherMode = !monsterWeatherMode;
+      const btn = document.getElementById('monsterBtn');
+      btn.innerHTML = monsterWeatherMode ? '&#9889; Monster PNGs: ON' : '&#9889; Monster PNGs: OFF';
+      btn.style.background = monsterWeatherMode ? '#d97706' : '#9333ea';
+      renderAllStorms();
+    }
+
     async function refreshRoutes() {
       const res = await fetch('/compute', {method: 'POST', body: JSON.stringify({cockpitMode})});
       const data = await res.json();
@@ -176,11 +233,11 @@
     async function spawnFlight() {
       const callsign = document.getElementById('csInput').value || 'SWA77';
       const orig = parseInt(origSel.value), dest = parseInt(destSel.value);
-      const style = parseInt(document.getElementById('styleSel').value);
       if (orig === dest) return;
-      await fetch('/add_flight', {method: 'POST', body: JSON.stringify({callsign, orig, dest, style})});
+      await fetch('/add_flight', {method: 'POST', body: JSON.stringify({callsign, orig, dest})});
       refreshRoutes();
     }
+
 
     async function triggerAIBriefing() {
       document.getElementById('aiBox').innerText = "Querying Gemini 2.5 Flash & ElevenLabs ATC Voice...";
@@ -199,25 +256,17 @@
     }
 
     map.on('click', async (e) => {
-      const weight = e.originalEvent.shiftKey ? 10 : 999;
-      const rad = e.originalEvent.shiftKey ? 3 : 4;
-      const col = weight === 999 ? '#ef4444' : '#eab308';
-      L.circle([e.latlng.lat, e.latlng.lng], {radius: rad * 35000, color: col, fillColor: col, fillOpacity: 0.55}).addTo(stormLayers);
-      await fetch('/add_storm', {method: 'POST', body: JSON.stringify({lat: e.latlng.lat, lon: e.latlng.lng, rad, weight})});
+      await fetch('/add_storm', {
+        method: 'POST',
+        body: JSON.stringify({lat: e.latlng.lat, lon: e.latlng.lng, type: currentWeatherType})
+      });
+      await renderAllStorms();
       refreshRoutes();
     });
 
     async function loadScenario(id) {
-      stormLayers.clearLayers();
-      if (id === 1) {
-        L.circle([28.5, -89.5], {radius: 140000, color:'#ef4444', fillOpacity:0.55}).addTo(stormLayers);
-        L.circle([37.0, -95.0], {radius: 110000, color:'#ef4444', fillOpacity:0.55}).addTo(stormLayers);
-      } else {
-        L.circle([29.0, -91.5], {radius: 105000, color:'#eab308', fillOpacity:0.55}).addTo(stormLayers);
-        L.circle([28.2, -87.0], {radius: 175000, color:'#ef4444', fillOpacity:0.55}).addTo(stormLayers);
-        L.circle([25.79, -80.29], {radius: 150000, color:'#ef4444', fillOpacity:0.65}).addTo(stormLayers);
-      }
       await fetch('/scenario', {method: 'POST', body: JSON.stringify({id})});
+      await renderAllStorms();
       refreshRoutes();
     }
 

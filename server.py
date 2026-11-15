@@ -1,4 +1,4 @@
-import os, subprocess, json, urllib.request, base64
+import os, subprocess, json, urllib.request, base64, random
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 
 AIRPORTS = [
@@ -8,33 +8,45 @@ AIRPORTS = [
     ("MIA", 25.79,  -80.29)
 ]
 
+def deduplicate_and_reset_flights(reset_coords=True):
+    if not os.path.exists("flights.txt"): return
+    with open("flights.txt", "r") as f:
+        lines = [l.strip().split() for l in f if l.strip()]
+    seen_cs, seen_routes, clean = set(), set(), []
+    for parts in lines:
+        if len(parts) < 5: continue
+        cs = parts[0].upper()
+        route = (parts[3], parts[4])
+        if cs in seen_cs:
+            continue # Skip duplicate callsign or duplicate origin->dest route!
+        seen_cs.add(cs)
+        seen_routes.add(route)
+        orig_idx = int(parts[3])
+        if reset_coords:
+            parts[1], parts[2] = str(AIRPORTS[orig_idx][1]), str(AIRPORTS[orig_idx][2])
+        style = parts[5] if (len(parts) >= 6 and not reset_coords) else str(random.randint(1, 3))
+        clean.append(f"{cs} {parts[1]} {parts[2]} {parts[3]} {parts[4]} {style}\n")
+    with open("flights.txt", "w") as f:
+        f.writelines(clean)
+
+
 def reset_scenario(scen=1):
     # If flights.txt doesn't exist or is empty, create initial defaults once
     if not os.path.exists("flights.txt") or os.path.getsize("flights.txt") == 0:
+        defaults = [("LJ60", 5, 9), ("AAL41", 4, 8), ("UAL88", 6, 2), ("DAL19", 7, 3)]
         with open("flights.txt", "w") as f:
-            f.write("LJ60 30.19 -97.66 5 9 1\n")
-            f.write("AAL41 32.89 -97.04 4 8 2\n")
-            f.write("UAL88 41.97 -87.90 6 2 3\n")
-            f.write("DAL19 33.64 -84.42 7 3 1\n")
+            for cs, o, d in defaults:
+                f.write(f"{cs} {AIRPORTS[o][1]} {AIRPORTS[o][2]} {o} {d} {random.randint(1, 3)}\n")
     else:
-        # Iterate through all existing flights in flights.txt and reset to origin
-        with open("flights.txt", "r") as f:
-            lines = [l.strip().split() for l in f if l.strip()]
-        with open("flights.txt", "w") as f:
-            for idx, parts in enumerate(lines):
-                orig_idx = int(parts[3])
-                parts[1] = str(AIRPORTS[orig_idx][1])
-                parts[2] = str(AIRPORTS[orig_idx][2])
-                if len(parts) < 6:
-                    parts.append(str((idx % 3) + 1)) # Assigns style 1, 2, or 3 if missing
-                f.write(" ".join(parts[:6]) + "\n")
+        deduplicate_and_reset_flights(reset_coords=True)
 
     with open("storms.txt", "w") as f:
         if scen == 1:
-            f.write("28.5 -89.5 4 999\n30.5 -88.0 3 50\n37.0 -95.0 3 999\n")
+            # 3=Thunderstorm (Gulf), 2=Sleet/Snow (Rockies), 1=Rain (Midwest)
+            f.write("28.5 -89.5 3\n39.0 -105.5 2\n36.5 -93.0 1\n")
         elif scen == 2:
-            f.write("29.0 -91.5 3 10\n28.2 -87.0 5 999\n25.79 -80.29 4 999\n")
-
+            # Rain shadow ahead of AUS, Thunderstorm behind it, plus Thunderstorm blocking MIA
+            f.write("29.0 -91.5 1\n28.2 -87.0 3\n25.79 -80.29 3\n")
 
 reset_scenario(1)
 
@@ -51,52 +63,69 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(out.encode())
 
+
         elif self.path == '/step_flights':
-            # Advance each aircraft 1 step along its computed A* path
             cockpit = "1" if body.get("cockpitMode") else "0"
             data = json.loads(subprocess.check_output(["./clearvector_cli", cockpit]).decode())
             with open("flights.txt", "r") as f:
                 lines = [l.strip().split() for l in f if l.strip()]
+            
+            occupied = set() # Tracks (lat, lon) of aircraft ahead for ATC in-trail spacing
             with open("flights.txt", "w") as f:
                 for i, parts in enumerate(lines):
                     if i < len(data["flights"]) and len(data["flights"][i]["path"]) > 1:
                         nxt = data["flights"][i]["path"][1]
-                        parts[1], parts[2] = str(nxt[0]), str(nxt[1])
+                        dest_pt = data["flights"][i]["path"][-1]
+                        nxt_key = (round(nxt[0], 2), round(nxt[1], 2))
+                        dest_key = (round(dest_pt[0], 2), round(dest_pt[1], 2))
+                        # Advance if next waypoint is clear OR if it's the final airport pin
+                        if nxt_key not in occupied or nxt_key == dest_key:
+                            parts[1], parts[2] = str(nxt[0]), str(nxt[1])
+                    cur_key = (round(float(parts[1]), 2), round(float(parts[2]), 2))
+                    occupied.add(cur_key)
                     f.write(" ".join(parts) + "\n")
             self.send_response(200); self.end_headers()
 
         elif self.path == '/add_flight':
-            o, d = int(body['orig']), int(body['dest'])
-            cs = body.get('callsign', 'SWA99')
-            style = int(body.get('style', 1))
-            lat, lon = AIRPORTS[o][1], AIRPORTS[o][2]
-            with open("flights.txt", "a") as f:
-                f.write(f"{cs} {lat} {lon} {o} {d} {style}\n")
-            self.send_response(200); self.end_headers()       
+            o, d = str(body['orig']), str(body['dest'])
+            cs = body.get('callsign', 'SWA99').strip().upper()
+            with open("flights.txt", "r") as f:
+                existing = [l.strip().split() for l in f if l.strip()]
+            # Reject if callsign or (orig, dest) route already exists
+            if not any(p[0].upper() == cs for p in existing):
+                lat, lon = AIRPORTS[int(o)][1], AIRPORTS[int(o)][2]
+                with open("flights.txt", "a") as f:
+                    f.write(f"{cs} {lat} {lon} {o} {d} {random.randint(1, 3)}\n")
+            self.send_response(200); self.end_headers()
+
 
         elif self.path == '/add_storm':
             with open("storms.txt", "a") as f:
-                f.write(f"{body['lat']} {body['lon']} {body['rad']} {body['weight']}\n")
+                f.write(f"{body['lat']} {body['lon']} {body['type']}\n")
             self.send_response(200); self.end_headers()
+
+        elif self.path == '/get_storms':
+            storms = []
+            if os.path.exists("storms.txt"):
+                with open("storms.txt", "r") as f:
+                    for line in f:
+                        p = line.strip().split()
+                        if len(p) >= 3:
+                            storms.append({"lat": float(p[0]), "lon": float(p[1]), "type": int(p[2])})
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(storms).encode())
+
 
         elif self.path == '/scenario':
             reset_scenario(body.get('id', 1))
             self.send_response(200); self.end_headers()
 
         elif self.path == '/reset_all':
-            with open("storms.txt", "w") as f:
-                pass
-            with open("flights.txt", "r") as f:
-                lines = [l.strip().split() for l in f if l.strip()]
-            with open("flights.txt", "w") as f:
-                for idx, parts in enumerate(lines):
-                    orig_idx = int(parts[3])
-                    parts[1], parts[2] = str(AIRPORTS[orig_idx][1]), str(AIRPORTS[orig_idx][2])
-                    if len(parts) < 6:
-                        parts.append(str((idx % 3) + 1))
-                    f.write(" ".join(parts[:6]) + "\n")
+            with open("storms.txt", "w") as f: pass
+            deduplicate_and_reset_flights(reset_coords=True)
             self.send_response(200); self.end_headers()
-
 
         elif self.path == '/ai_briefing':
             summary = body.get("summary", "Flight LJ60 encountering 55 dBZ squall line.")

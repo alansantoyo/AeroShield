@@ -37,6 +37,7 @@ void GridToLatLon(Point p, double &lat, double &lon) {
 
 int grid[GRID_H][GRID_W];
 int perceived[GRID_H][GRID_W];
+int airwayTraffic[GRID_H][GRID_W];
 
 struct Node {
     Point pt;
@@ -82,7 +83,7 @@ std::vector<Point> RunAStar(Point start, Point goal, bool cockpitMode, int &node
             }
 
             double step = (d[0] != 0 && d[1] != 0) ? 1.414 : 1.0;
-            double ng = curr.g + step * w + halo;
+            double ng = curr.g + step * w + halo + airwayTraffic[ny][nx] * 6.0;
             if (ng < gScore[ny][nx]) {
                 gScore[ny][nx] = ng;
                 parent[ny][nx] = curr.pt;
@@ -116,22 +117,35 @@ int main(int argc, char* argv[]) {
     for (auto &a : airports) a.pt = LatLonToGrid(a.lat, a.lon);
 
     for (int y = 0; y < GRID_H; y++)
-        for (int x = 0; x < GRID_W; x++)
+        for (int x = 0; x < GRID_W; x++) {
             grid[y][x] = 1;
+	    airwayTraffic[y][x] = 0;
+        }
 
-    // Read dynamic storms painted in the browser (storms.txt)
+    // Read dynamic storms painted in the browser: lat lon type (1=Rain, 2=Sleet/Snow, 3=Thunderstorm)
     std::ifstream sf("storms.txt");
-    double slat, slon, srad; int sw;
-    while (sf >> slat >> slon >> srad >> sw) {
+    double slat, slon; int stype;
+    while (sf >> slat >> slon >> stype) {
         Point c = LatLonToGrid(slat, slon);
-        int r = std::max(1, (int)srad);
-        for (int dy = -r; dy <= r; dy++)
-            for (int dx = -r; dx <= r; dx++)
-                if (dx*dx + dy*dy <= r*r) {
-                    int ny = c.y + dy, nx = c.x + dx;
-                    if (ny >= 0 && ny < GRID_H && nx >= 0 && nx < GRID_W)
-                        grid[ny][nx] = std::max(grid[ny][nx], sw);
+        int maxR = (stype == 3) ? 6 : (stype == 2 ? 5 : 3);
+        for (int dy = -maxR; dy <= maxR; dy++) {
+            for (int dx = -maxR; dx <= maxR; dx++) {
+                double dist = std::hypot(dx, dy);
+                if (dist > maxR) continue;
+                int ny = c.y + dy, nx = c.x + dx;
+                if (ny < 0 || ny >= GRID_H || nx < 0 || nx >= GRID_W) continue;
+
+                int w = 1;
+                if (stype == 3) { // Thunderstorm: Red core -> Yellow middle -> Green outer
+                    w = (dist <= 2.2) ? 999 : (dist <= 4.2 ? 80 : 15);
+                } else if (stype == 2) { // Sleet/Snow: Dark Purple core -> Light Pink outer
+                    w = (dist <= 2.2) ? 400 : 45;
+                } else { // Rain: Green spot
+                    w = 15;
                 }
+                grid[ny][nx] = std::max(grid[ny][nx], w);
+            }
+        }
     }
 
     struct FlightReq { std::string id; double lat, lon; int orig, dest, style; };
@@ -196,19 +210,38 @@ int main(int argc, char* argv[]) {
         std::cout << "    {\"callsign\":\"" << flights[i].id << "\", \"orig\":\"" << airports[flights[i].orig].code
                   << "\", \"dest\":\"" << airports[flights[i].dest].code << "\", \"activeGoal\":\"" << airports[activeGoal].code
                   << "\", \"shipStyle\":" << flights[i].style
-                  << "\", \"diverted\":" << (diverted ? "true" : "false") << ", \"path\":[";
-        
-	for (size_t p = 0; p < path.size(); p++) {
+                  << ", \"diverted\":" << (diverted ? "true" : "false") << ", \"path\":[";
+ 
+        // Register corridor usage so subsequent flights prefer parallel cells
+        for (size_t p = 1; p + 1 < path.size(); p++) {
+            airwayTraffic[path[p].y][path[p].x]++;
+        }
+
+        // Count how many prior flights share this exact origin->dest pair for visual lateral spacing
+        int sameRouteIdx = 0;
+        for (size_t j = 0; j < i; j++) {
+            if (flights[j].orig == flights[i].orig && flights[j].dest == flights[i].dest)
+                sameRouteIdx++;
+        }
+        double laneSign = (sameRouteIdx % 2 == 1) ? 1.0 : -1.0;
+        double laneMag  = ((sameRouteIdx + 1) / 2) * 0.38; // ~25nm parallel airway offset
+        double latOff = (sameRouteIdx == 0) ? 0.0 : laneSign * laneMag;
+        double lonOff = (sameRouteIdx == 0) ? 0.0 : -laneSign * laneMag;
+
+        for (size_t p = 0; p < path.size(); p++) {
             double plat, plon;
             if (p == 0 && path.size() > 1) {
-                plat = flights[i].lat; plon = flights[i].lon; // Exact current position
+                plat = flights[i].lat; plon = flights[i].lon;
             } else if (p + 1 == path.size()) {
-                plat = airports[activeGoal].lat; plon = airports[activeGoal].lon; // Exact airport pin!
+                plat = airports[activeGoal].lat; plon = airports[activeGoal].lon;
             } else {
                 GridToLatLon(path[p], plat, plon);
+                plat += latOff;
+                plon += lonOff;
             }
             std::cout << "[" << plat << "," << plon << "]" << (p + 1 < path.size() ? "," : "");
         }
+
         std::cout << "]}" << (i + 1 < flights.size() ? ",\n" : "\n");
     }
     auto t1 = std::chrono::high_resolution_clock::now();
