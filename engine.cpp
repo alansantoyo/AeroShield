@@ -135,16 +135,17 @@ int main(int argc, char* argv[]) {
                 int ny = c.y + dy, nx = c.x + dx;
                 if (ny < 0 || ny >= GRID_H || nx < 0 || nx >= GRID_W) continue;
 
-                int w = 1;
-                if (stype == 3) { // Thunderstorm: Red core -> Yellow middle -> Green outer
-                    w = (dist <= 2.2) ? 999 : (dist <= 4.2 ? 80 : 15);
-                } else if (stype == 2) { // Sleet/Snow: Dark Purple core -> Light Pink outer
-                    w = (dist <= 2.2) ? 400 : 45;
-                } else { // Rain: Green spot
-                    w = 15;
+		int w = 1;
+                if (stype == 3) {        // Thunderstorm: Red core (999) -> Yellow (120) -> Green (40)
+                    w = (dist <= 2.5) ? 999 : (dist <= 4.5 ? 120 : 40);
+                } else if (stype == 2) { // Sleet/Snow: Dark Purple core (999) -> Light Pink (90)
+                    w = (dist <= 2.5) ? 999 : 90;
+                } else {                 // Rain: Inner core (999) -> Outer Green ring (50)
+                    w = (dist <= 1.8) ? 999 : 50;
                 }
                 grid[ny][nx] = std::max(grid[ny][nx], w);
-            }
+            
+	    }
         }
     }
 

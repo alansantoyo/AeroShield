@@ -30,13 +30,11 @@
 
     <div class="card">
       <div>C++ A* LATENCY: <span id="latMs" class="tag">0.00 ms</span> | NODES: <span id="nodes" class="tag">0</span></div>
-      <div>RADAR MODE: <span id="modeTxt" class="tag">GROUND NEXRAD COMPOSITE</span></div>
     </div>
 
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6px;">
       <button class="btn-play" id="playBtn" onclick="togglePlay()">&#9654; Play Live Flights</button>
       <button class="btn-ai" onclick="triggerAIBriefing()">&#128266; Gemini + ElevenLabs ATC</button>
-      <button onclick="toggleNexrad()">[R] Live NOAA NEXRAD</button>
       <button onclick="toggleOdysseyIcons()" id="odysseyBtn" style="background:#b45309;">&#9875; Odyssey Ships: OFF</button>
       <button onclick="resetAll()" style="background:#475569;">&#8634; Reset Flights &amp; Clear Weather</button>
     </div>
@@ -49,8 +47,8 @@
       </div>
       <div style="display:grid; grid-template-columns: 1fr 1fr 1fr; gap:4px;">
         <button id="wBtn3" onclick="setWeatherBrush(3)" style="background:#dc2626; text-align:center;">T-Storm<br><span style="font-size:10px;">(Zeus)</span></button>
-        <button id="wBtn2" onclick="setWeatherBrush(2)" style="background:#334155; text-align:center;">Sleet/Snow<br><span style="font-size:10px;">(Laestryg.)</span></button>
-        <button id="wBtn1" onclick="setWeatherBrush(1)" style="background:#334155; text-align:center;">Rain<br><span style="font-size:10px;">(Sirens)</span></button>
+        <button id="wBtn2" onclick="setWeatherBrush(2)" style="background:#334155; text-align:center;">Sleet/Snow<br><span style="font-size:10px;">(Cyclops)</span></button>
+        <button id="wBtn1" onclick="setWeatherBrush(1)" style="background:#334155; text-align:center;">Rain<br><span style="font-size:10px;">(Poseidon)</span></button>
       </div>
     </div>
 
@@ -87,11 +85,7 @@
       maxZoom: 16
     }).addTo(map);
 
-    const nexradLayer = L.tileLayer.wms('https://mesonet.agron.iastate.edu/cgi-bin/wms/nexrad/n0q.cgi', {
-      layers: 'nexrad-n0q-900913', format: 'image/png', transparent: true, opacity: 0.55
-    }).addTo(map);
-
-    let cockpitMode = false, showNexrad = true, playing = false, playTimer = null;
+    let playing = false, playTimer = null;
     let lastFlights = [];
     let routeLayers = L.layerGroup().addTo(map);
     let stormLayers = L.layerGroup().addTo(map);
@@ -132,7 +126,7 @@
     const monsterIcons = {
       3: L.icon({ iconUrl: 'zeus.png',           iconSize: [76, 76], iconAnchor: [38, 38] }),
       2: L.icon({ iconUrl: 'laestrygonians.png', iconSize: [68, 68], iconAnchor: [34, 34] }),
-      1: L.icon({ iconUrl: 'sirens.png',         iconSize: [54, 54], iconAnchor: [27, 27] })
+      1: L.icon({ iconUrl: 'sirens.jpeg',         iconSize: [54, 54], iconAnchor: [27, 27] })
     };
 
     function setWeatherBrush(type) {
@@ -200,7 +194,7 @@
           
           const activeIcon = odysseyMode ? (shipIcons[f.shipStyle] || shipIcons[1]) : planeIcon;
           L.marker(origPt, {icon: activeIcon})
-           .bindTooltip(`${f.callsign} (Style ${f.shipStyle})`, {permanent: true, direction: 'right', offset:[10,0]})
+           .bindTooltip(`${f.callsign}`, {permanent: true, direction: 'right', offset:[10,0]})
            .addTo(routeLayers);
         }
 
@@ -264,27 +258,6 @@
       refreshRoutes();
     });
 
-    async function loadScenario(id) {
-      await fetch('/scenario', {method: 'POST', body: JSON.stringify({id})});
-      await renderAllStorms();
-      refreshRoutes();
-    }
-
-    function toggleCockpit() {
-      cockpitMode = !cockpitMode;
-      const el = document.getElementById('modeTxt');
-      el.innerText = cockpitMode ? 'COCKPIT X-BAND (ATTENUATED)' : 'GROUND NEXRAD COMPOSITE';
-      el.style.color = cockpitMode ? '#f59e0b' : '#4ade80';
-      refreshRoutes();
-    }
-
-    function toggleNexrad() {
-      showNexrad = !showNexrad;
-      if (showNexrad) nexradLayer.addTo(map); else map.removeLayer(nexradLayer);
-    }
-
-    loadScenario(1);
-
     function toggleOdysseyIcons() {
       odysseyMode = !odysseyMode;
       const btn = document.getElementById('odysseyBtn');
@@ -298,6 +271,9 @@
       await fetch('/reset_all', {method: 'POST'});
       refreshRoutes();
     }
+
+    renderAllStorms();
+    refreshRoutes();
   </script>
 </body>
 </html>

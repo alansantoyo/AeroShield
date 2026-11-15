@@ -40,13 +40,7 @@ def reset_scenario(scen=1):
     else:
         deduplicate_and_reset_flights(reset_coords=True)
 
-    with open("storms.txt", "w") as f:
-        if scen == 1:
-            # 3=Thunderstorm (Gulf), 2=Sleet/Snow (Rockies), 1=Rain (Midwest)
-            f.write("28.5 -89.5 3\n39.0 -105.5 2\n36.5 -93.0 1\n")
-        elif scen == 2:
-            # Rain shadow ahead of AUS, Thunderstorm behind it, plus Thunderstorm blocking MIA
-            f.write("29.0 -91.5 1\n28.2 -87.0 3\n25.79 -80.29 3\n")
+    open("storms.txt", "w").close()
 
 reset_scenario(1)
 
@@ -116,11 +110,6 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps(storms).encode())
-
-
-        elif self.path == '/scenario':
-            reset_scenario(body.get('id', 1))
-            self.send_response(200); self.end_headers()
 
         elif self.path == '/reset_all':
             with open("storms.txt", "w") as f: pass
