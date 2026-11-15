@@ -6,6 +6,7 @@
 #include <chrono>
 #include <algorithm>
 #include <string>
+#include <iomanip>
 
 const int GRID_W = 120; // High-res 120x80 grid across Continental US
 const int GRID_H = 80;
@@ -24,8 +25,8 @@ struct Airport {
 };
 
 Point LatLonToGrid(double lat, double lon) {
-    int x = (int)((lon - MIN_LON) / (MAX_LON - MIN_LON) * (GRID_W - 1));
-    int y = (int)((MAX_LAT - lat) / (MAX_LAT - MIN_LAT) * (GRID_H - 1));
+    int x = (int)std::round((lon - MIN_LON) / (MAX_LON - MIN_LON) * (GRID_W - 1));
+    int y = (int)std::round((MAX_LAT - lat) / (MAX_LAT - MIN_LAT) * (GRID_H - 1));
     return {std::clamp(x, 0, GRID_W - 1), std::clamp(y, 0, GRID_H - 1)};
 }
 
@@ -142,6 +143,7 @@ int main(int argc, char* argv[]) {
     auto t0 = std::chrono::high_resolution_clock::now();
     int totalNodes = 0;
 
+    std::cout << std::fixed << std::setprecision(6);
     std::cout << "{\n  \"flights\": [\n";
     for (size_t i = 0; i < flights.size(); i++) {
         Point start = LatLonToGrid(flights[i].lat, flights[i].lon);
