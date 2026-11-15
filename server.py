@@ -1,5 +1,5 @@
 import os, subprocess, json, urllib.request, base64, random, ssl, math
-from http.server import SimpleHTTPRequestHandler, HTTPServer
+from http.server import SimpleHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 AIRPORTS = [
     ("SEA", 47.45, -122.30), ("SFO", 37.62, -122.37), ("LAX", 33.94, -118.40),
@@ -73,20 +73,25 @@ class Handler(SimpleHTTPRequestHandler):
             occupied = set() # Tracks (lat, lon) of aircraft ahead for ATC in-trail spacing
             with open("flights.txt", "w") as f:
                 for i, parts in enumerate(lines):
+                    if len(parts) < 7:
+                        parts.append(str(calc_initial_fuel(int(parts[3]), int(parts[4]))))
                     if i < len(data["flights"]) and len(data["flights"][i]["path"]) > 1:
                         nxt = data["flights"][i]["path"][1]
                         dest_pt = data["flights"][i]["path"][-1]
                         nxt_key = (round(nxt[0], 2), round(nxt[1], 2))
                         dest_key = (round(dest_pt[0], 2), round(dest_pt[1], 2))
-                        # Advance if next waypoint is clear OR if it's the final airport pin
-                        fuel_left = int(parts[6]) if len(parts) >= 7 else 50
+                        fuel_left = int(parts[6])
                         if fuel_left > 0 and (nxt_key not in occupied or nxt_key == dest_key):
                             parts[1], parts[2] = str(nxt[0]), str(nxt[1])
-                            parts[6] = str(fuel_left - 1) # Burn 1 unit of fuel per step!   
+                            parts[6] = str(fuel_left - 1)
+                        # Only mark airspace occupied if aircraft has not landed yet
+                        cur_key = (round(float(parts[1]), 2), round(float(parts[2]), 2))
+                        if cur_key != dest_key:
+                            occupied.add(cur_key)
+                    f.write(" ".join(parts[:7]) + "\n")
 
-                    cur_key = (round(float(parts[1]), 2), round(float(parts[2]), 2))
-                    occupied.add(cur_key)
-                    f.write(" ".join(parts) + "\n")
+
+
             self.send_response(200); self.end_headers()
 
         elif self.path == '/add_flight':
@@ -127,50 +132,58 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_response(200); self.end_headers()
 
         elif self.path == '/ai_briefing':
-            summary = body.get("summary", "Flight LJ60 encountering 55 dBZ squall line.")
+            summary = body.get("summary", "Flight LJ60 encountering severe squall line.")
             g_key = os.environ.get("GEMINI_API_KEY", "").strip()
             e_key = os.environ.get("ELEVENLABS_API_KEY", "").strip()
-            briefing = (f"AEOLUS ATC ADVISORY: {summary} Ground NEXRAD composite penetrated X-band shadow. "
-                        f"Executing immediate zero-click vector around Scylla convective core.")
 
-            # 1. Call Google Gemini 2.5 Flash for live tactical ATC + Odyssey briefing
+            # Default structured Tactical Action Card fallback
+            tactical_card = {
+                "voice_squawk": f"AEOLUS ATC ADVISORY: {summary} Execute immediate vector around Scylla convective core.",
+                "risk_score": 8,
+                "fuel_impact_est": "+1,450 lbs (+19 mins)"
+            }
+
             if g_key:
-                prompt = (f"You are AEOLUS-ATC, an automated aviation safety engine inspired by Homer's Odyssey. "
-                          f"Given this live radar telemetry: {summary}. Write a 2-sentence urgent ATC voice advisory "
-                          f"giving a heading/diversion command and briefly referencing steering clear of Zeus/Poseidon/Cyclops storm cells.")
+                prompt = (
+                    f"You are AEOLUS-ATC (inspired by Homer's Odyssey). Telemetry: {summary}\n"
+                    f"Reply in ONE single line separated by pipes (|) with no markdown:\n"
+                    f"2-sentence urgent ATC voice squawk referencing Zeus/Poseidon/Cyclops | integer risk 1-10 | extra fuel & delay estimate\n"
+                    f"Example: Mayday LJ60, turn heading 190 immediately to evade Scylla supercell. Diverting to ATL.|9|+1,650 lbs (+22 mins)"
+                )
                 ctx = ssl._create_unverified_context()
-                # Try fast non-thinking Flash models in order so rate-limits/timeouts never fail
-                for model_name in ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-flash-latest"]:
-                    try:
-                        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={g_key}"
-                        payload = {
-                            "contents": [{"parts": [{"text": prompt}]}],
-                            "generationConfig": {"maxOutputTokens": 90, "temperature": 0.7}
-                        }
-                        # Disable thinking latency on 2.5/latest models for sub-second response
-                        if "2.0" not in model_name:
-                            payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
+                try:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={g_key}"
+                    payload = {
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.4}
+                    }
+                    req = urllib.request.Request(
+                        url, data=json.dumps(payload).encode(),
+                        headers={"Content-Type": "application/json"}
+                    )
+                    res = json.loads(urllib.request.urlopen(req, timeout=8, context=ctx).read().decode())
+                    raw_txt = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    parts = [p.strip() for p in raw_txt.split("|")]
+                    if len(parts) >= 3:
+                        tactical_card["voice_squawk"] = parts[0]
+                        digits = "".join(c for c in parts[1] if c.isdigit())
+                        tactical_card["risk_score"] = int(digits) if digits else 8
+                        tactical_card["fuel_impact_est"] = parts[2]
+                    else:
+                        tactical_card["voice_squawk"] = raw_txt
+                except Exception as ex:
+                    print(f"[Gemini fast fallback]: {ex}")
 
-                        req = urllib.request.Request(
-                            url, data=json.dumps(payload).encode(),
-                            headers={"Content-Type": "application/json", "Connection": "close"}
-                        )
-                        res = json.loads(urllib.request.urlopen(req, timeout=12, context=ctx).read().decode())
-                        briefing = res["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        break # Succeeded! Exit fallback loop
-                    except Exception as ex:
-                        print(f"[Gemini {model_name} retry]: {ex}")
-
-            # 2. Call ElevenLabs TTS API for realistic AI ATC Voice Audio
+            # Send ONLY the voice_squawk string to ElevenLabs TTS
             audio_b64 = ""
             if e_key:
                 try:
-                    voice_id = "JBFqnCBsd6RMkjVDRZzb" # George - authoritative ATC tone
+                    voice_id = "JBFqnCBsd6RMkjVDRZzb"
                     e_url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
                     e_req = urllib.request.Request(e_url, data=json.dumps({
-                        "text": briefing, "model_id": "eleven_turbo_v2_5"
+                        "text": tactical_card["voice_squawk"], "model_id": "eleven_turbo_v2_5"
                     }).encode(), headers={"xi-api-key": e_key, "Content-Type": "application/json", "Accept": "audio/mpeg"})
-                    audio_bytes = urllib.request.urlopen(e_req, timeout=12, context=ssl._create_unverified_context()).read() 
+                    audio_bytes = urllib.request.urlopen(e_req, timeout=12, context=ssl._create_unverified_context()).read()
                     audio_b64 = base64.b64encode(audio_bytes).decode()
                 except Exception:
                     audio_b64 = ""
@@ -178,7 +191,13 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({"briefing": briefing, "audio_b64": audio_b64}).encode())
+            self.wfile.write(json.dumps({
+                "briefing": tactical_card["voice_squawk"],
+                "risk_score": tactical_card["risk_score"],
+                "fuel_impact_est": tactical_card["fuel_impact_est"],
+                "audio_b64": audio_b64
+            }).encode())
+
 
 print("ClearVector Server live at http://localhost:8000")
-HTTPServer(('localhost', 8000), Handler).serve_forever()
+ThreadingHTTPServer(('localhost', 8000), Handler).serve_forever()

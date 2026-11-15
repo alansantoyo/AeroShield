@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <string>
 #include <iomanip>
+#include <sstream>
 
 const int GRID_W = 120; // High-res 120x80 grid across Continental US
 const int GRID_H = 80;
@@ -152,8 +153,16 @@ int main(int argc, char* argv[]) {
     struct FlightReq { std::string id; double lat, lon; int orig, dest, style, fuel; };
     std::vector<FlightReq> flights;
     std::ifstream ff("flights.txt");
-    FlightReq fq;
-    while (ff >> fq.id >> fq.lat >> fq.lon >> fq.orig >> fq.dest >> fq.style >> fq.fuel) flights.push_back(fq);
+    std::string line;
+    while (std::getline(ff, line)) {
+        if (line.empty()) continue;
+        std::istringstream iss(line);
+        FlightReq fq{"", 0, 0, 0, 0, 1, 100}; // Defaults to style=1, fuel=100 if missing!
+        if (iss >> fq.id >> fq.lat >> fq.lon >> fq.orig >> fq.dest) {
+            iss >> fq.style >> fq.fuel;
+            flights.push_back(fq);
+        }
+    }
 
     auto t0 = std::chrono::high_resolution_clock::now();
     int totalNodes = 0;
@@ -229,11 +238,21 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        bool atGoal = (start == airports[activeGoal].pt);
+        bool fuelExhausted = (!atGoal && flights[i].fuel <= 0);
+        if (fuelExhausted) {
+            divertReason = "FUEL EXHAUSTED - DITCHED / BLACKBOX ACTIVE";
+        }
+
         std::cout << "    {\"callsign\":\"" << flights[i].id << "\", \"orig\":\"" << airports[flights[i].orig].code
                   << "\", \"dest\":\"" << airports[flights[i].dest].code << "\", \"activeGoal\":\"" << airports[activeGoal].code
                   << "\", \"shipStyle\":" << flights[i].style << ", \"fuel\":" << flights[i].fuel
+                  << ", \"lat\":" << flights[i].lat << ", \"lon\":" << flights[i].lon
+                  << ", \"gridX\":" << start.x << ", \"gridY\":" << start.y
+                  << ", \"fuelExhausted\":" << (fuelExhausted ? "true" : "false")
                   << ", \"divertReason\":\"" << divertReason << "\""
                   << ", \"diverted\":" << (diverted ? "true" : "false") << ", \"path\":[";
+
  
         // Register corridor usage so subsequent flights prefer parallel cells
         for (size_t p = 1; p + 1 < path.size(); p++) {
@@ -241,16 +260,6 @@ int main(int argc, char* argv[]) {
         }
 
         // Count how many prior flights share this exact origin->dest pair for visual lateral spacing
-        int sameRouteIdx = 0;
-        for (size_t j = 0; j < i; j++) {
-            if (flights[j].orig == flights[i].orig && flights[j].dest == flights[i].dest)
-                sameRouteIdx++;
-        }
-        double laneSign = (sameRouteIdx % 2 == 1) ? 1.0 : -1.0;
-        double laneMag  = ((sameRouteIdx + 1) / 2) * 0.38; // ~25nm parallel airway offset
-        double latOff = (sameRouteIdx == 0) ? 0.0 : laneSign * laneMag;
-        double lonOff = (sameRouteIdx == 0) ? 0.0 : -laneSign * laneMag;
-
         for (size_t p = 0; p < path.size(); p++) {
             double plat, plon;
             if (p == 0 && path.size() > 1) {
@@ -259,8 +268,6 @@ int main(int argc, char* argv[]) {
                 plat = airports[activeGoal].lat; plon = airports[activeGoal].lon;
             } else {
                 GridToLatLon(path[p], plat, plon);
-                plat += latOff;
-                plon += lonOff;
             }
             std::cout << "[" << plat << "," << plon << "]" << (p + 1 < path.size() ? "," : "");
         }

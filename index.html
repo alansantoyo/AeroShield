@@ -65,10 +65,14 @@
       </div>
     </div>
 
-    <!-- AI Briefing Box -->
+    <!-- AI Briefing Box (Structured JSON Tactical Action Card) -->
     <div class="card" style="border-left-color:#a855f7;">
-      <div style="font-weight:bold; color:#c084fc; margin-bottom:4px;">GEMINI + ELEVENLABS TACTICAL ADVISORY:</div>
-      <div id="aiBox" style="font-size:12px; color:#e2e8f0; font-style:italic;">Click "Gemini + ElevenLabs ATC" to generate live voice vector advisory...</div>
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <span style="font-weight:bold; color:#c084fc;">GEMINI TACTICAL ACTION CARD</span>
+        <span id="aiRiskBadge" style="background:#334155; color:#fff; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:bold;">STANDBY</span>
+      </div>
+      <div id="aiFuelBadge" style="font-size:11px; color:#38bdf8; font-weight:bold; margin-bottom:4px;">Click any flight card below for targeted ATC dispatch</div>
+      <div id="aiBox" style="font-size:12px; color:#e2e8f0; font-style:italic;">Select a flight or click "Gemini + ElevenLabs ATC" to auto-triage emergencies...</div>
     </div>
 
     <div id="roster" style="display:flex; flex-direction:column; gap:6px; flex:1; overflow-y:auto; padding-right:4px;"></div>
@@ -206,15 +210,22 @@
       roster.innerHTML = '';
 
       data.flights.forEach((f, idx) => {
-        if (f.path.length > 1) {
+        const arrived = (!f.fuelExhausted && f.path.length === 1);
+        const stranded = (f.fuelExhausted || (!arrived && f.path.length === 0));
+
+        if (stranded) {
+          // Draw pulsing red NTSB Black-Box Locator Beacon at Last-Known Location
+          L.circleMarker([f.lat, f.lon], {radius: 9, color: '#ef4444', weight: 3, fillColor: '#7f1d1d', fillOpacity: 0.9})
+           .bindTooltip(`&#9888; BLACKBOX: ${f.callsign}<br>LKL: ${f.lat.toFixed(3)}, ${f.lon.toFixed(3)}<br>GRID: [${f.gridX}, ${f.gridY}]`, {permanent: true, direction: 'top'})
+           .addTo(routeLayers);
+        } else if (f.path.length > 1) {
           const origPt = f.path[0];
           const destAp = AIRPORTS.find(a => a.code === f.dest);
-          // Dashed red intended straight line
           if (destAp) L.polyline([origPt, [destAp.lat, destAp.lon]], {color: '#ef4444', weight: 1.5, dashArray: '5,6', opacity: 0.5}).addTo(routeLayers);
 
-	  const color = f.diverted ? '#f43f5e' : '#4ade80';
+          const color = f.diverted ? '#f43f5e' : '#4ade80';
           L.polyline(f.path, {color, weight: idx===0 ? 4 : 2.5}).addTo(routeLayers);
-          
+
           const activeIcon = odysseyMode ? (shipIcons[f.shipStyle] || shipIcons[1]) : planeIcon;
           L.marker(origPt, {icon: activeIcon})
            .bindTooltip(`${f.callsign}`, {permanent: true, direction: 'right', offset:[10,0]})
@@ -222,14 +233,26 @@
         }
 
         const div = document.createElement('div');
-        div.className = 'card' + (f.diverted ? ' diverted' : '');
-	const arrived = f.path.length <= 1;
-        div.innerHTML = `<b>${f.callsign}</b> (${f.orig} &rarr; ${f.dest}) - ${arrived ? '0' : f.path.length} wypts<br>` +
+        div.className = 'card' + ((f.diverted || stranded) ? ' diverted' : '');
+        div.style.cursor = 'pointer';
+        div.title = `Click for Gemini + ElevenLabs ATC Dispatch on ${f.callsign}`;
+        div.onclick = () => triggerAIBriefing(idx);
+        const wypts = arrived ? 0 : Math.max(0, f.path.length - 1);
+        const fuelMargin = f.fuel - wypts;
+        const fuelColor = (f.fuel <= 0 || fuelMargin <= 3) ? '#ef4444' : (fuelMargin <= 8 ? '#eab308' : '#38bdf8');
+
+        div.innerHTML = `<div style="display:flex; justify-content:space-between;">` +
+          `<b>${f.callsign} (${f.orig} &rarr; ${f.dest})</b>` +
+          `<span style="color:${fuelColor}; font-weight:bold;">&#9981; FUEL: ${f.fuel}u (Need: ${wypts}u)</span>` +
+          `</div>` +
+          `<div style="font-size:11px; color:#94a3b8; margin:2px 0;">LKL: ${f.lat.toFixed(3)}&deg;N, ${f.lon.toFixed(3)}&deg;W | GRID: [${f.gridX}, ${f.gridY}]</div>` +
+          (stranded ? `<span style="color:#ef4444;font-weight:bold;">&#9888; BLACKBOX PING: ${f.divertReason}</span>` :
           (arrived ? `<span style="color:#38bdf8;font-weight:bold;">ARRIVED AT ${f.activeGoal} &#10004;</span>` :
-          (f.diverted ? `<span style="color:#fb7185;font-weight:bold;">EMERGENCY DIVERSION &rarr; ${f.activeGoal}</span>`
-                      : `<span style="color:#4ade80;">STATUS: SAFE VECTOR LOCKED</span>`));        
+          (f.diverted ? `<span style="color:#fb7185;font-weight:bold;">DIVERTED &rarr; ${f.activeGoal} [${f.divertReason}]</span>`
+                      : `<span style="color:#4ade80;">STATUS: SAFE VECTOR (RESERVE: +${fuelMargin}u)</span>`)));
         roster.appendChild(div);
       });
+
     }
 
     function togglePlay() {
@@ -256,21 +279,41 @@
     }
 
 
-    async function triggerAIBriefing() {
-      document.getElementById('aiBox').innerText = "Querying Gemini 2.5 Flash & ElevenLabs ATC Voice...";
-      const f0 = lastFlights[0] || {callsign:'LJ60', orig:'AUS', dest:'MIA', activeGoal:'ATL', diverted:true};
-      const summary = `Aircraft ${f0.callsign} from ${f0.orig} to ${f0.dest}. Diverted: ${f0.diverted}. Active target: ${f0.activeGoal}.`;
-      const res = await fetch('/ai_briefing', {method: 'POST', body: JSON.stringify({summary})});
+    async function triggerAIBriefing(idx) {
+      if (!lastFlights || lastFlights.length === 0) return;
+      let f = (idx !== undefined && lastFlights[idx]) ? lastFlights[idx] : null;
+      if (!f) {
+        // Auto-triage: prioritize stranded or diverted aircraft first!
+        f = lastFlights.find(fl => fl.fuelExhausted || fl.diverted) || lastFlights[0];
+      }
+
+      document.getElementById('aiBox').innerText = `Synthesizing structured JSON telemetry for ${f.callsign}...`;
+      document.getElementById('aiRiskBadge').innerText = 'ANALYZING...';
+      document.getElementById('aiRiskBadge').style.background = '#64748b';
+
+      const wypts = Math.max(0, f.path.length - 1);
+      const summary = `Callsign ${f.callsign} (${f.orig} to ${f.dest}). Active Goal: ${f.activeGoal}. Diverted: ${f.diverted} (${f.divertReason}). Fuel Remaining: ${f.fuel}u, Waypoints Needed: ${wypts}u. Last Known Grid: [${f.gridX}, ${f.gridY}] at (${f.lat.toFixed(2)}, ${f.lon.toFixed(2)}).`;
+
+      const res = await fetch('/ai_briefing', {method: 'POST', body: JSON.stringify({summary, callsign: f.callsign})});
       const data = await res.json();
+
+      const score = data.risk_score || 5;
+      const badge = document.getElementById('aiRiskBadge');
+      badge.innerText = `RISK SCORE: ${score}/10`;
+      badge.style.background = score >= 8 ? '#e11d48' : (score >= 5 ? '#d97706' : '#16a34a');
+
+      document.getElementById('aiFuelBadge').innerText = `TARGET: ${f.callsign} | EST. DETOUR IMPACT: ${data.fuel_impact_est || 'NOMINAL'}`;
       document.getElementById('aiBox').innerText = data.briefing;
 
       if (data.audio_b64) {
         new Audio("data:audio/mp3;base64," + data.audio_b64).play();
       } else if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
         const u = new SpeechSynthesisUtterance(data.briefing);
         u.rate = 1.08; window.speechSynthesis.speak(u);
       }
     }
+
 
     map.on('click', async (e) => {
       await fetch('/add_storm', {
