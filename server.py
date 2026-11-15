@@ -337,4 +337,4 @@ class Handler(SimpleHTTPRequestHandler):
             }).encode())
 
 print("ClearVector Server live at http://localhost:8000")
-ThreadingHTTPServer(('localhost', 8000), Handler).serve_forever()
+ThreadingHTTPServer(('0.0.0.0', 8000), Handler).serve_forever()

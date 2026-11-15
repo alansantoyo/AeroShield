@@ -207,10 +207,11 @@ int main(int argc, char* argv[]) {
             std::vector<std::pair<double, int>> cands;
             for (int a = 0; a < (int)airports.size(); a++) {
                 if (a == flights[i].dest) continue;
-                if (a == flights[i].orig && start == airports[flights[i].orig].pt) continue;
                 // Do not divert to an airport that is itself buried under a 999 storm core!
                 if (grid[airports[a].pt.y][airports[a].pt.x] >= 999.0) continue;
-                cands.push_back({std::hypot(airports[a].pt.x - start.x, airports[a].pt.y - start.y), a});
+                double dist = std::hypot(airports[a].pt.x - start.x, airports[a].pt.y - start.y);
+                if (a == flights[i].orig) dist += 1000.0; // Prefer other alternates first, but allow landing at orig without bouncing
+                cands.push_back({dist, a});
             }
             std::sort(cands.begin(), cands.end());
 
