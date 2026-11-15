@@ -149,11 +149,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    struct FlightReq { std::string id; double lat, lon; int orig, dest, style; };
+    struct FlightReq { std::string id; double lat, lon; int orig, dest, style, fuel; };
     std::vector<FlightReq> flights;
     std::ifstream ff("flights.txt");
     FlightReq fq;
-    while (ff >> fq.id >> fq.lat >> fq.lon >> fq.orig >> fq.dest >> fq.style) flights.push_back(fq);
+    while (ff >> fq.id >> fq.lat >> fq.lon >> fq.orig >> fq.dest >> fq.style >> fq.fuel) flights.push_back(fq);
 
     auto t0 = std::chrono::high_resolution_clock::now();
     int totalNodes = 0;
@@ -187,30 +187,52 @@ int main(int argc, char* argv[]) {
 
         int activeGoal = flights[i].dest;
         bool diverted = false;
+        std::string divertReason = "NONE";
         std::vector<Point> path = RunAStar(start, airports[activeGoal].pt, (cockpitMode && i == 0), totalNodes);
 
-        // If destination is walled off, divert to nearest reachable US airport!
-        if (path.empty()) {
+        int reqSteps = path.empty() ? 999999 : ((int)path.size() - 1);
+
+        // Divert if destination is blocked by weather OR detour exceeds remaining fuel!
+        if (path.empty() || reqSteps > flights[i].fuel) {
+            divertReason = path.empty() ? "WEATHER BLOCKADE" : "LOW FUEL (DETOUR EXCEEDS RANGE)";
             std::vector<std::pair<double, int>> cands;
             for (int a = 0; a < (int)airports.size(); a++) {
                 if (a == flights[i].dest) continue;
                 cands.push_back({std::hypot(airports[a].pt.x - start.x, airports[a].pt.y - start.y), a});
             }
             std::sort(cands.begin(), cands.end());
+
+            bool foundWithinFuel = false;
+            // 1st pass: Find nearest reachable alternate airport within remaining fuel
             for (auto &c : cands) {
                 auto alt = RunAStar(start, airports[c.second].pt, (cockpitMode && i == 0), totalNodes);
-                if (!alt.empty()) {
+                if (!alt.empty() && ((int)alt.size() - 1) <= flights[i].fuel) {
                     path = alt;
                     activeGoal = c.second;
                     diverted = true;
+                    foundWithinFuel = true;
                     break;
+                }
+            }
+            // 2nd pass: Critical emergency — pick absolute shortest path to any open airport
+            if (!foundWithinFuel) {
+                for (auto &c : cands) {
+                    auto alt = RunAStar(start, airports[c.second].pt, (cockpitMode && i == 0), totalNodes);
+                    if (!alt.empty()) {
+                        path = alt;
+                        activeGoal = c.second;
+                        diverted = true;
+                        divertReason = "MAYDAY FUEL CRITICAL";
+                        break;
+                    }
                 }
             }
         }
 
         std::cout << "    {\"callsign\":\"" << flights[i].id << "\", \"orig\":\"" << airports[flights[i].orig].code
                   << "\", \"dest\":\"" << airports[flights[i].dest].code << "\", \"activeGoal\":\"" << airports[activeGoal].code
-                  << "\", \"shipStyle\":" << flights[i].style
+                  << "\", \"shipStyle\":" << flights[i].style << ", \"fuel\":" << flights[i].fuel
+                  << ", \"divertReason\":\"" << divertReason << "\""
                   << ", \"diverted\":" << (diverted ? "true" : "false") << ", \"path\":[";
  
         // Register corridor usage so subsequent flights prefer parallel cells
