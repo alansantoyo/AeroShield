@@ -1,19 +1,24 @@
 import os, subprocess, json, urllib.request, base64, random, ssl, math
+from http.server import SimpleHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import time
 mongo_col = None
-mongo_logged_keys = set() # Prevents logging the exact same flight state twice on every 450ms tick
+mongo_logged_keys = set()
 try:
     import pymongo, certifi
     m_uri = os.environ.get("MONGODB_URI", "").strip()
-    if m_uri:
-        client = pymongo.MongoClient(m_uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=2500)
+    if not m_uri:
+        print("[MongoDB Atlas] MONGODB_URI is empty! Run export MONGODB_URI=... in this terminal.")
+    else:
+        client = pymongo.MongoClient(m_uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=8000)
+        client.admin.command('ping')  # Forces real connection check on startup!
         mongo_col = client["clearvector_ntsb"]["blackbox_vault"]
-        print("[MongoDB Atlas] Connected to clearvector_ntsb.blackbox_vault!")
-except Exception as e:
-    print(f"[MongoDB Atlas Standby]: {e}")
+        mongo_total_docs = mongo_col.count_documents({})
+        print(f"[MongoDB Atlas] PING OK! Connected ({mongo_total_docs} existing logs in vault)")
 
-from http.server import SimpleHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+except Exception as e:
+    print(f"[MongoDB Atlas Error]: {e}")
+
 
 AIRPORTS = [
     ("SEA", 47.45, -122.30), ("SFO", 37.62, -122.37), ("LAX", 33.94, -118.40),
@@ -70,17 +75,18 @@ class Handler(SimpleHTTPRequestHandler):
         body = json.loads(self.rfile.read(length)) if length else {}
 
         if self.path == '/compute':
+            global mongo_total_docs
             out = subprocess.check_output(["./clearvector_cli", "0"]).decode()
             parsed = json.loads(out)
-            m_count = len(mongo_logged_keys)
 
-            if mongo_col is not None:
-                try:
-                    for fl in parsed.get("flights", []):
-                        is_incident = fl.get("diverted") or fl.get("fuelExhausted") or len(fl.get("path", [])) == 0
-                        dedup_key = f"{fl['callsign']}_{fl['activeGoal']}_{fl['divertReason']}_{fl['fuelExhausted']}"
-                        if is_incident and dedup_key not in mongo_logged_keys:
-                            mongo_logged_keys.add(dedup_key)
+            for fl in parsed.get("flights", []):
+                is_incident = fl.get("diverted") or fl.get("fuelExhausted") or len(fl.get("path", [])) == 0
+                dedup_key = f"{fl['callsign']}_{fl['activeGoal']}_{fl['divertReason']}_{fl['fuelExhausted']}"
+                if is_incident and dedup_key not in mongo_logged_keys:
+                    mongo_logged_keys.add(dedup_key)
+                    mongo_total_docs += 1
+                    if mongo_col is not None:
+                        try:
                             mongo_col.insert_one({
                                 "event_type": "NTSB_FLIGHT_INCIDENT",
                                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -94,16 +100,17 @@ class Handler(SimpleHTTPRequestHandler):
                                 "last_known_grid": [fl["gridX"], fl["gridY"]],
                                 "astar_calc_ms": parsed.get("calcMs", 0)
                             })
-                    m_count = mongo_col.count_documents({})
-                except Exception as ex:
-                    print(f"[MongoDB write warn]: {ex}")
+                        except Exception as ex:
+                            print(f"[MongoDB write warn]: {ex}")
 
-            parsed["mongoCount"] = m_count
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json')
-            self.end_headers()
-            self.wfile.write(json.dumps(parsed).encode())
-
+            parsed["mongoCount"] = mongo_total_docs
+            try:
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(parsed).encode())
+            except BrokenPipeError:
+                pass
 
         elif self.path == '/step_flights':
             cockpit = "1" if body.get("cockpitMode") else "0"
