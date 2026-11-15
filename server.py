@@ -148,7 +148,7 @@ class Handler(SimpleHTTPRequestHandler):
                     f"You are AEOLUS-ATC (inspired by Homer's Odyssey). Telemetry: {summary}\n"
                     f"Reply in ONE single line separated by pipes (|) with no markdown:\n"
                     f"2-sentence urgent ATC voice squawk referencing Zeus/Poseidon/Cyclops | integer risk 1-10 | extra fuel & delay estimate\n"
-                    f"Example: Mayday LJ60, turn heading 190 immediately to evade Scylla supercell. Diverting to ATL.|9|+1,650 lbs (+22 mins)"
+                    f"Example: Mayday LJ60, turn heading 190 immediately to evade Zeus supercell. Diverting to ATL.|9|+1,650 lbs (+22 mins)"
                 )
                 ctx = ssl._create_unverified_context()
                 try:
