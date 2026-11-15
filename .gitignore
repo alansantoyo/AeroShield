@@ -66,3 +66,14 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+clearvector_cli
+flights.txt
+storms.txt
+
+laestrygonians.png
+ship1.png
+ship2.png
+ship3.png
+sirens.jpeg
+zeus.png
