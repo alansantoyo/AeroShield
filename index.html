@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>ClearVector // AEOLUS-ATC National Airspace Engine</title>
+  <title>AeroShield // ATC National Airspace Engine</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <style>
@@ -25,7 +25,7 @@
 <body>
   <div id="map"></div>
   <div id="sidebar">
-    <h2>CLEARVECTOR // AEOLUS-ATC</h2>
+    <h2>AEROSHIELD ATC</h2>
     <div style="font-size:11px; color:#94a3b8;">Odyssey Navigation Engine: C++17 A* + NOAA NEXRAD + Gemini AI</div>
 
     <div class="card">
@@ -71,11 +71,11 @@
       <div id="aiBox" style="font-size:12px; color:#e2e8f0; font-style:italic;">Click "Gemini + ElevenLabs ATC" to generate live voice vector advisory...</div>
     </div>
 
-    <div id="roster" style="display:flex; flex-direction:column; gap:6px;"></div>
+    <div id="roster" style="display:flex; flex-direction:column; gap:6px; flex:1; overflow-y:auto; padding-right:4px;"></div>
   </div>
 
   <script>
-    const map = L.map('map').setView([35.5, -95.0], 4);
+    const map = L.map('map', { doubleClickZoom: false }).setView([35.5, -95.0], 4);
 
     // Esri World Dark Gray Canvas + State Borders (Zero API Key)
     L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
@@ -136,23 +136,46 @@
       document.getElementById('wBtn1').style.background = (type === 1) ? '#16a34a' : '#334155';
     }
 
+    // Generates an irregular, organic radar polygon instead of a perfect circle
+    function makeRadarBlob(lat, lon, baseDegLat, baseDegLon, seedOffset) {
+      const pts = [];
+      const steps = 28;
+      const seed = (lat * 137.5 + lon * 293.1 + seedOffset);
+      for (let i = 0; i < steps; i++) {
+        const ang = (i / steps) * Math.PI * 2;
+        // Multi-frequency sine waves create jagged, natural storm lobes
+        const jitter = 0.72
+          + 0.22 * Math.sin(ang * 3 + seed)
+          + 0.16 * Math.cos(ang * 5 - seed * 1.7)
+          + 0.10 * Math.sin(ang * 8 + seed * 2.3);
+        // Stretch slightly SW-to-NE like real mid-latitude squall fronts
+        const dLat = baseDegLat * jitter * Math.sin(ang);
+        const dLon = baseDegLon * jitter * Math.cos(ang) * 1.35;
+        pts.push([lat + dLat, lon + dLon]);
+      }
+      return pts;
+    }
+
     function drawSingleStorm(lat, lon, type) {
       if (monsterWeatherMode) {
         L.marker([lat, lon], {icon: monsterIcons[type] || monsterIcons[3]}).addTo(stormLayers);
         return;
       }
       if (type === 3) {
-        // Thunderstorm: Outer Green -> Middle Yellow -> Inner Dark Red Core
-        L.circle([lat, lon], {radius: 210000, stroke: false, fillColor: '#22c55e', fillOpacity: 0.35}).addTo(stormLayers);
-        L.circle([lat, lon], {radius: 140000, stroke: false, fillColor: '#eab308', fillOpacity: 0.50}).addTo(stormLayers);
-        L.circle([lat, lon], {radius:  75000, stroke: false, fillColor: '#991b1b', fillOpacity: 0.80}).addTo(stormLayers);
+        // Thunderstorm: Jagged Green outer -> Yellow mid -> Dark Red core + flanking cell
+        L.polygon(makeRadarBlob(lat, lon, 1.85, 2.10, 1), {stroke: false, fillColor: '#22c55e', fillOpacity: 0.35}).addTo(stormLayers);
+        L.polygon(makeRadarBlob(lat, lon, 1.25, 1.40, 2), {stroke: false, fillColor: '#eab308', fillOpacity: 0.55}).addTo(stormLayers);
+        L.polygon(makeRadarBlob(lat, lon, 0.68, 0.78, 3), {stroke: false, fillColor: '#991b1b', fillOpacity: 0.85}).addTo(stormLayers);
+        // Secondary anvil core slightly offset
+        L.polygon(makeRadarBlob(lat + 0.35, lon + 0.45, 0.45, 0.50, 4), {stroke: false, fillColor: '#dc2626', fillOpacity: 0.75}).addTo(stormLayers);
       } else if (type === 2) {
-        // Sleet/Snow: Outer Light Pink -> Inner Dark Purple Core
-        L.circle([lat, lon], {radius: 175000, stroke: false, fillColor: '#f472b6', fillOpacity: 0.45}).addTo(stormLayers);
-        L.circle([lat, lon], {radius:  75000, stroke: false, fillColor: '#581c87', fillOpacity: 0.80}).addTo(stormLayers);
+        // Sleet/Snow: Organic Light Pink icing band -> Dark Purple core
+        L.polygon(makeRadarBlob(lat, lon, 1.55, 1.85, 5), {stroke: false, fillColor: '#f472b6', fillOpacity: 0.45}).addTo(stormLayers);
+        L.polygon(makeRadarBlob(lat, lon, 0.72, 0.88, 6), {stroke: false, fillColor: '#581c87', fillOpacity: 0.82}).addTo(stormLayers);
       } else {
-        // Rain: Single Dark-to-Mid Green Spot
-        L.circle([lat, lon], {radius: 105000, stroke: false, fillColor: '#15803d', fillOpacity: 0.60}).addTo(stormLayers);
+        // Rain: Irregular two-tone green precipitation shield
+        L.polygon(makeRadarBlob(lat, lon, 1.05, 1.25, 7), {stroke: false, fillColor: '#4ade80', fillOpacity: 0.40}).addTo(stormLayers);
+        L.polygon(makeRadarBlob(lat, lon, 0.58, 0.68, 8), {stroke: false, fillColor: '#15803d', fillOpacity: 0.70}).addTo(stormLayers);
       }
     }
 
@@ -183,7 +206,7 @@
       roster.innerHTML = '';
 
       data.flights.forEach((f, idx) => {
-        if (f.path.length > 0) {
+        if (f.path.length > 1) {
           const origPt = f.path[0];
           const destAp = AIRPORTS.find(a => a.code === f.dest);
           // Dashed red intended straight line
